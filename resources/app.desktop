@@ -1,0 +1,11 @@
+[Desktop Entry]
+Name=Llming Cosmic
+Comment=An application for the COSMIC™ desktop
+Type=Application
+Icon=com.waffles.llming.app
+Exec=llming-cosmic %F
+Terminal=false
+StartupNotify=true
+Categories=COSMIC
+Keywords=COSMIC
+MimeType=
