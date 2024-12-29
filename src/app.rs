@@ -5,7 +5,6 @@ use crate::llm::LLMWithFS;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
 use cosmic::iced::{Length, Subscription};
-use cosmic::iced_runtime::DefaultStyle;
 use cosmic::theme;
 use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
 use cosmic::Apply;
