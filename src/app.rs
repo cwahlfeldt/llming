@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
+use crate::llm::LLMWithFS;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
 use cosmic::iced::{Length, Subscription};
@@ -9,12 +10,14 @@ use cosmic::theme;
 use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
 use cosmic::Apply;
 use cosmic::Element;
+use std::net::SocketAddr;
 
 pub struct AppModel {
     core: Core,
     config: Config,
     messages: Vec<ChatMessage>,
     input_value: String,
+    llm_fs: Option<LLMWithFS>,
 }
 
 #[derive(Debug, Clone)]
@@ -28,6 +31,9 @@ pub enum Message {
     InputChanged(String),
     SendMessage,
     UpdateConfig(Config),
+    LLMFSInitialized(LLMWithFS),
+    ReceivedResponse(String),
+    Error(String),
 }
 
 impl cosmic::Application for AppModel {
@@ -50,9 +56,23 @@ impl cosmic::Application for AppModel {
             config: Config::default(),
             messages: Vec::new(),
             input_value: String::new(),
+            llm_fs: None,
         };
 
-        (app, Task::none())
+        let init_task = Task::future(async move {
+            let addr: SocketAddr = "[::1]:3456".parse().unwrap();
+            let allowed_paths = vec![
+                "/home/waffles".to_string(),
+                "/home/waffles/code".to_string(),
+            ];
+
+            match LLMWithFS::new(addr, allowed_paths).await {
+                Ok(llm_fs) => cosmic::app::Message::App(Message::LLMFSInitialized(llm_fs)),
+                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
+            }
+        });
+
+        (app, init_task)
     }
 
     fn subscription(&self) -> Subscription<Message> {
@@ -63,26 +83,55 @@ impl cosmic::Application for AppModel {
         match message {
             Message::InputChanged(value) => {
                 self.input_value = value;
+                Task::none()
             }
             Message::SendMessage => {
                 if !self.input_value.trim().is_empty() {
-                    self.messages.push(ChatMessage {
+                    let message = ChatMessage {
                         content: self.input_value.clone(),
                         is_user: true,
-                    });
-                    // Simple echo response
-                    self.messages.push(ChatMessage {
-                        content: format!("You said: {}", self.input_value),
-                        is_user: false,
-                    });
-                    self.input_value.clear();
+                    };
+                    self.messages.push(message);
+
+                    if let Some(llm_fs) = self.llm_fs.clone() {
+                        let input = self.input_value.clone();
+                        self.input_value.clear();
+
+                        return Task::future(async move {
+                            match llm_fs.chat(&input).await {
+                                Ok(response) => {
+                                    cosmic::app::Message::App(Message::ReceivedResponse(response))
+                                }
+                                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
+                            }
+                        });
+                    }
                 }
+                Task::none()
+            }
+            Message::LLMFSInitialized(llm_fs) => {
+                self.llm_fs = Some(llm_fs);
+                Task::none()
+            }
+            Message::ReceivedResponse(response) => {
+                self.messages.push(ChatMessage {
+                    content: response,
+                    is_user: false,
+                });
+                Task::none()
+            }
+            Message::Error(error) => {
+                self.messages.push(ChatMessage {
+                    content: format!("Error: {}", error),
+                    is_user: false,
+                });
+                Task::none()
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
+                Task::none()
             }
         }
-        Task::none()
     }
 
     fn view(&self) -> Element<Message> {

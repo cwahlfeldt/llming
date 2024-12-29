@@ -9,6 +9,7 @@ mod llm;
 mod mcp;
 
 fn main() -> cosmic::iced::Result {
+    dotenv::dotenv().ok();
     // Get the system's preferred languages.
     let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
 
