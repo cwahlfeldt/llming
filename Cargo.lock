@@ -3162,6 +3162,7 @@ dependencies = [
  "anyhow",
  "bytes",
  "chrono",
+ "derivative",
  "dirs",
  "dotenv",
  "futures-util",

@@ -4,14 +4,17 @@ use crate::config::Config;
 use crate::llm::LLM;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
+use cosmic::cosmic_theme::palette::encoding::srgb;
+use cosmic::cosmic_theme::palette::{rgb, Srgb};
 use cosmic::iced::theme::Palette;
 use cosmic::iced::{Length, Subscription};
 use cosmic::theme;
-use cosmic::widget::markdown;
 use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
+use cosmic::widget::{markdown, Space};
 use cosmic::Apply;
 use cosmic::Element;
 use cosmic::Theme;
+use derivative::Derivative;
 use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
 
@@ -20,13 +23,17 @@ pub struct Messages {
     value: Vec<ChatMessage>,
 }
 
+#[derive(Derivative, Default, Derivative)]
+// #[derivative(Debug)]
 pub struct AppModel {
-    core: Core,
     config: Config,
-    messages: Messages,
+    error: Option<String>,
     input_value: String,
     llm_fs: Option<LLM>,
+    messages: Messages,
     parsed_messages: Vec<Vec<markdown::Item>>,
+    #[derivative(Debug = "ignore")]
+    core: Core,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -68,6 +75,7 @@ impl cosmic::Application for AppModel {
             input_value: String::new(),
             llm_fs: None,
             parsed_messages: Vec::new(),
+            error: None, // Initialize error state
         };
 
         let init_task = Task::future(async move {
@@ -138,6 +146,7 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
             Message::Error(error) => {
+                self.error = Some(error.clone()); // Set error state
                 self.messages.value.push(ChatMessage {
                     content: format!("Error: {}", error),
                     is_user: false,
@@ -163,33 +172,47 @@ impl cosmic::Application for AppModel {
             ..
         } = theme::active().cosmic().spacing;
 
-        let messages = self.messages.value.iter().enumerate().fold(
-            column::with_capacity(self.messages.value.len())
-                .spacing(space_l)
-                .padding(space_m),
-            |column, (index, message)| {
-                let message_content = container(
-                    markdown::view(
-                        &self.parsed_messages[index],
-                        markdown::Settings::default(),
-                        markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
-                    )
-                    .map(Message::LinkClicked),
-                )
-                .padding(10)
-                .width(Length::Fill);
+        let messages = column::with_children(
+            self.messages
+                .value
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    // Add bounds checking
+                    let content = self
+                        .parsed_messages
+                        .get(index)
+                        .map(|parsed| {
+                            markdown::view(
+                                parsed,
+                                markdown::Settings::default(),
+                                markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
+                            )
+                            .map(Message::LinkClicked)
+                        })
+                        .unwrap_or_else(|| text::Text::new("Error: Failed to load message").into());
 
-                column.push(
+                    let message_content = container(content).padding(10).width(Length::Fill);
+
                     container::Container::new(message_content)
                         .width(Length::Fill)
                         .align_x(if message.is_user {
                             cosmic::iced::alignment::Alignment::End
                         } else {
                             cosmic::iced::alignment::Alignment::Start
-                        }),
-                )
-            },
-        );
+                        })
+                        .into()
+                })
+                .collect(),
+        )
+        .padding(space_m);
+
+        // Add error display if present
+        let mut content = column::with_capacity(3);
+
+        if let Some(error) = &self.error {
+            content = content.push(container(text(error)));
+        }
 
         // Input row with text input and send button
         let input = row::with_capacity(2)
@@ -198,22 +221,23 @@ impl cosmic::Application for AppModel {
                 text_input::text_input("Type a message...", &self.input_value)
                     .on_input(Message::InputChanged)
                     .on_submit(Message::SendMessage)
-                    .padding(space_m)
+                    // .padding(space_m)
                     .width(Length::Fill),
             )
-            .push(button::standard("Send").on_press(Message::SendMessage));
+            .push(
+                button::standard("Send")
+                    .on_press(Message::SendMessage)
+                    // .padding(space_m)
+                    .width(Length::Fixed(100.0)),
+            );
 
-        // Main layout
-        let content = column::with_capacity(2)
+        content = content
             .push(cosmic::iced_widget::Scrollable::new(messages).height(Length::Fill))
             .push(
                 container::Container::new(input)
                     .padding(space_m)
                     .width(Length::Fill),
-            )
-            .spacing(space_xxs)
-            .width(Length::Fill)
-            .height(Length::Fill);
+            );
 
         container::Container::new(content)
             .width(Length::Fill)

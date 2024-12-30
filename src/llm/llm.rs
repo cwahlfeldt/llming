@@ -4,12 +4,13 @@ use std::net::SocketAddr;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
+use super::anthropic::AnthropicClient;
 use super::deepseek::DeepSeekClient;
-use crate::mcp::*;
+use crate::{llm::models::model::ModelClient, mcp::*};
 
 #[derive(Clone, Debug)]
 pub struct LLM {
-    llm: DeepSeekClient,
+    llm: AnthropicClient,
     mcp_client: MCPClient,
     mcp_server: MCPServer,
 }
@@ -75,7 +76,7 @@ impl LLM {
             }
         }
 
-        let llm = DeepSeekClient::new();
+        let llm = AnthropicClient::new();
         Ok(Self {
             llm,
             mcp_client,
@@ -85,19 +86,41 @@ impl LLM {
 
     pub async fn chat(&self, message: &str) -> Result<String> {
         debug!("Processing chat message: {}", message);
+        let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
 
-        let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info());
-        let system_prompt = r#"
-            Model Context Server Information:
+        // let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
+        let system_prompt = format!(
+            r#"
+            System Prompt:
             You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directroies or files from /home/waffles. When users request file operations. You also act as a general chat interface and will answer any questions.
-            "#;
+                When performing operations, use the following format:
+    {{{{
+        "operation": "operation_name",
+        "parameters": {{
+            // operation parameters
+        }}
+    }}}}
+            Available operations:
+            1. List directory:
+          {{
+                "operation": "files.list_directory",
+                "parameters": {{
+                    "path": "/path/to/directory"
+        }}
+        }}
+
+            {}
+
+            "#,
+            mcp_tool_descriptions
+        );
 
         // First, send the combined prompt to the LLM
         debug!("Sending enhanced prompt to LLM");
         let enhanced_message = format!("{}{}", system_prompt, message);
 
         let initial_response = match self.llm.send_message(&enhanced_message).await {
-            Ok(response) => response,
+            Ok(response) => response.to_string(),
             Err(e) => {
                 error!("LLM request failed: {}", e);
                 return Err(anyhow::anyhow!("Failed to get response from LLM: {}", e));
@@ -108,6 +131,10 @@ impl LLM {
 
         // Extract and execute any file operations
         let operations = self.extract_operations(&initial_response);
+        debug!("Extracted {} operations from response", operations.len());
+        for op in &operations {
+            debug!("Operation: {:?}", op);
+        }
         let mut final_response = initial_response.clone();
 
         if operations.is_empty() {
@@ -201,8 +228,8 @@ impl LLM {
         let mut operations = Vec::new();
         let mut start_idx = 0;
 
-        while let Some(start) = response[start_idx..].find("{{{") {
-            if let Some(end) = response[start_idx + start..].find("}}}") {
+        while let Some(start) = response[start_idx..].find("{{{{") {
+            if let Some(end) = response[start_idx + start..].find("}}}}") {
                 let json_str = &response[start_idx + start + 3..start_idx + start + end].trim();
                 debug!("Extracted JSON string: {}", json_str);
 
