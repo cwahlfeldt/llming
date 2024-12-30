@@ -1,6 +1,7 @@
 mod client;
-mod filesystem;
 mod server;
+mod servers;
 
 pub use client::MCPClient;
-pub use filesystem::create_filesystem_mcp_server;
+pub use server::MCPServer;
+pub use servers::filesystem::create_filesystem_mcp_server;

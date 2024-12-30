@@ -1,4 +1,4 @@
-name := 'llming-cosmic'
+name := 'llming'
 appid := 'com.waffles.llming.app'
 
 rootdir := ''

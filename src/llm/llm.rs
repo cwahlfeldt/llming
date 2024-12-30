@@ -5,30 +5,31 @@ use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
 use super::deepseek::DeepSeekClient;
-// use crate::mc::MCPClient;
 use crate::mcp::*;
 
 #[derive(Clone, Debug)]
-pub struct LLMWithFS {
+pub struct LLM {
     llm: DeepSeekClient,
     mcp_client: MCPClient,
+    mcp_server: MCPServer,
 }
 
-impl LLMWithFS {
+impl LLM {
     pub async fn new(addr: SocketAddr, allowed_paths: Vec<String>) -> Result<Self> {
-        info!("Initializing LLMWithFS with paths: {:?}", allowed_paths);
+        info!("Initializing LLM with mcp servers: [filesystem]");
 
         // Create and start the filesystem MCP server
-        let server = create_filesystem_mcp_server(addr, allowed_paths).await?;
+        let mcp_server = create_filesystem_mcp_server(addr, allowed_paths).await?;
 
         // Start the server in a separate task and wait for it to be ready
         let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = mcp_server.clone();
 
         tokio::spawn(async move {
             debug!("Server task starting");
             tx.send(()).expect("Failed to send server ready signal");
 
-            if let Err(e) = server.serve().await {
+            if let Err(e) = server_handle.serve().await {
                 error!("MCP server error: {}", e);
             }
         });
@@ -75,69 +76,21 @@ impl LLMWithFS {
         }
 
         let llm = DeepSeekClient::new();
-        Ok(Self { llm, mcp_client })
+        Ok(Self {
+            llm,
+            mcp_client,
+            mcp_server,
+        })
     }
 
     pub async fn chat(&self, message: &str) -> Result<String> {
         debug!("Processing chat message: {}", message);
 
-        let system_prompt = r#"You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directroies or files from /home/waffles. When users request file operations, format your response like this:
-
-I'll help you with that. Let me perform the operation:
-
-{{{
-{
-    "operation": "files.list_directory",
-    "parameters": {
-        "path": "/absolute/path/here"
-    }
-}
-}}}
-
-Note:
-- The JSON must be properly formatted with quotes around strings
-- The entire JSON object must be wrapped in {{{ }}}
-- Use correct JSON syntax with commas between fields
-- Always use absolute paths
-- Include both 'operation' and 'parameters' fields
-
-Available operations:
-
-1. List directory:
-{
-    "operation": "files.list_directory",
-    "parameters": {
-        "path": "/path/to/directory"
-    }
-}
-
-2. Search files:
-{
-    "operation": "files.search_files",
-    "parameters": {
-        "path": "/path/to/search",
-        "pattern": "search-pattern"
-    }
-}
-
-3. Read file:
-{
-    "operation": "files.read_file",
-    "parameters": {
-        "path": "/path/to/file"
-    }
-}
-
-4. Write file:
-{
-    "operation": "files.write_file",
-    "parameters": {
-        "path": "/path/to/file",
-        "content": "content to write"
-    }
-}
-
-User query: "#;
+        let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info());
+        let system_prompt = r#"
+            Model Context Server Information:
+            You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directroies or files from /home/waffles. When users request file operations. You also act as a general chat interface and will answer any questions.
+            "#;
 
         // First, send the combined prompt to the LLM
         debug!("Sending enhanced prompt to LLM");

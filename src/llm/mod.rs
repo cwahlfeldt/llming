@@ -1,3 +1,5 @@
-mod deepseek;
-mod llm_fs;
-pub use llm_fs::LLMWithFS;
+mod llm;
+mod models;
+
+pub use llm::LLM;
+pub use models::deepseek;

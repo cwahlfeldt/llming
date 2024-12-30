@@ -27,6 +27,15 @@ pub struct MCPServer {
     http_server: crate::http::HttpServer,
 }
 
+impl std::fmt::Debug for MCPServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MCPServer")
+            .field("info", &self.info)
+            .field("http_server", &self.http_server)
+            .finish()
+    }
+}
+
 impl MCPServer {
     pub fn new(addr: std::net::SocketAddr, info: MCPServerInfo) -> Self {
         Self {
@@ -35,6 +44,10 @@ impl MCPServer {
             prompt_renderers: Arc::new(RwLock::new(HashMap::new())),
             http_server: crate::http::HttpServer::new(addr),
         }
+    }
+
+    pub fn get_info(&self) -> &MCPServerInfo {
+        &self.info
     }
 
     pub async fn register_async_function<F, Fut>(

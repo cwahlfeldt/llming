@@ -1,25 +1,35 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
-use crate::llm::LLMWithFS;
+use crate::llm::LLM;
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
+use cosmic::iced::theme::Palette;
 use cosmic::iced::{Length, Subscription};
 use cosmic::theme;
+use cosmic::widget::markdown;
 use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
 use cosmic::Apply;
 use cosmic::Element;
+use cosmic::Theme;
+use serde::{Deserialize, Serialize};
 use std::net::SocketAddr;
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Messages {
+    value: Vec<ChatMessage>,
+}
 
 pub struct AppModel {
     core: Core,
     config: Config,
-    messages: Vec<ChatMessage>,
+    messages: Messages,
     input_value: String,
-    llm_fs: Option<LLMWithFS>,
+    llm_fs: Option<LLM>,
+    parsed_messages: Vec<Vec<markdown::Item>>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 struct ChatMessage {
     content: String,
     is_user: bool,
@@ -30,9 +40,10 @@ pub enum Message {
     InputChanged(String),
     SendMessage,
     UpdateConfig(Config),
-    LLMFSInitialized(LLMWithFS),
+    LLMFSInitialized(LLM),
     ReceivedResponse(String),
     Error(String),
+    LinkClicked(markdown::Url),
 }
 
 impl cosmic::Application for AppModel {
@@ -53,9 +64,10 @@ impl cosmic::Application for AppModel {
         let app = AppModel {
             core,
             config: Config::default(),
-            messages: Vec::new(),
+            messages: Messages::default(),
             input_value: String::new(),
             llm_fs: None,
+            parsed_messages: Vec::new(),
         };
 
         let init_task = Task::future(async move {
@@ -65,7 +77,7 @@ impl cosmic::Application for AppModel {
                 "/home/waffles/code".to_string(),
             ];
 
-            match LLMWithFS::new(addr, allowed_paths).await {
+            match LLM::new(addr, allowed_paths).await {
                 Ok(llm_fs) => cosmic::app::Message::App(Message::LLMFSInitialized(llm_fs)),
                 Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
             }
@@ -87,13 +99,16 @@ impl cosmic::Application for AppModel {
             Message::SendMessage => {
                 if !self.input_value.trim().is_empty() {
                     let message = ChatMessage {
-                        content: self.input_value.clone(),
+                        content: self.input_value.to_owned(),
                         is_user: true,
                     };
-                    self.messages.push(message);
+                    self.parsed_messages
+                        .push(markdown::parse(&message.content).collect());
 
-                    if let Some(llm_fs) = self.llm_fs.clone() {
-                        let input = self.input_value.clone();
+                    self.messages.value.push(message);
+
+                    if let Some(llm_fs) = self.llm_fs.to_owned() {
+                        let input = serde_json::to_string(&self.messages.value).unwrap();
                         self.input_value.clear();
 
                         return Task::future(async move {
@@ -113,14 +128,17 @@ impl cosmic::Application for AppModel {
                 Task::none()
             }
             Message::ReceivedResponse(response) => {
-                self.messages.push(ChatMessage {
+                self.parsed_messages
+                    .push(markdown::parse(&response).collect());
+
+                self.messages.value.push(ChatMessage {
                     content: response,
                     is_user: false,
                 });
                 Task::none()
             }
             Message::Error(error) => {
-                self.messages.push(ChatMessage {
+                self.messages.value.push(ChatMessage {
                     content: format!("Error: {}", error),
                     is_user: false,
                 });
@@ -128,6 +146,10 @@ impl cosmic::Application for AppModel {
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
+                Task::none()
+            }
+            Message::LinkClicked(url) => {
+                println!("Link clicked: {}", url);
                 Task::none()
             }
         }
@@ -141,23 +163,29 @@ impl cosmic::Application for AppModel {
             ..
         } = theme::active().cosmic().spacing;
 
-        // Build message list
-        let messages = self.messages.iter().fold(
-            column::with_capacity(self.messages.len())
+        let messages = self.messages.value.iter().enumerate().fold(
+            column::with_capacity(self.messages.value.len())
                 .spacing(space_l)
                 .padding(space_m),
-            |column, message| {
-                let message_text = text::body(&message.content);
-
-                let message_container = container::Container::new(message_text);
+            |column, (index, message)| {
+                let message_content = container(
+                    markdown::view(
+                        &self.parsed_messages[index],
+                        markdown::Settings::default(),
+                        markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
+                    )
+                    .map(Message::LinkClicked),
+                )
+                .padding(10)
+                .width(Length::Fill);
 
                 column.push(
-                    container::Container::new(message_container)
+                    container::Container::new(message_content)
                         .width(Length::Fill)
                         .align_x(if message.is_user {
-                            cosmic::iced::alignment::Horizontal::Right
+                            cosmic::iced::alignment::Alignment::End
                         } else {
-                            cosmic::iced::alignment::Horizontal::Left
+                            cosmic::iced::alignment::Alignment::Start
                         }),
                 )
             },

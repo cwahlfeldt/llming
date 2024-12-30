@@ -1,4 +1,4 @@
-app-title = Llming Cosmic
+app-title = Llming
 about = About
 view = View
 welcome = Welcome to COSMIC! ✨
