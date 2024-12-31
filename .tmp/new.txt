@@ -1,0 +1,2568 @@
+Directory Structure:
+
+└── src
+    ├── app.rs
+    ├── app_config
+    │   ├── app_config.rs
+    │   └── mod.rs
+    ├── config.rs
+    ├── http
+    │   ├── client.rs
+    │   ├── mod.rs
+    │   └── server.rs
+    ├── i18n.rs
+    ├── llm
+    │   ├── llm.rs
+    │   ├── mod.rs
+    │   └── models
+    │       ├── anthropic.rs
+    │       ├── deepseek.rs
+    │       ├── mod.rs
+    │       └── model.rs
+    ├── main.rs
+    ├── mcp
+    │   ├── client.rs
+    │   ├── mod.rs
+    │   ├── server.rs
+    │   └── servers
+    │       ├── filesystem.rs
+    │       └── mod.rs
+    └── prompts
+        └── system.txt
+
+File Contents:
+
+=== main.rs ===
+
+// SPDX-License-Identifier: MPL-2.0
+
+mod app;
+mod app_config;
+mod config;
+mod http;
+mod i18n;
+mod llm;
+mod mcp;
+
+fn main() -> cosmic::iced::Result {
+    dotenv::dotenv().ok();
+    // Get the system's preferred languages.
+    let requested_languages = i18n_embed::DesktopLanguageRequester::requested_languages();
+
+    // Enable localizations to be applied.
+    i18n::init(&requested_languages);
+
+    // Settings for configuring the application window and iced runtime.
+    let settings = cosmic::app::Settings::default().size_limits(
+        cosmic::iced::Limits::NONE
+            .min_width(360.0)
+            .min_height(180.0),
+    );
+
+    // Starts the application's event loop with `()` as the application's flags.
+    cosmic::app::run::<app::AppModel>(settings, ())
+}
+
+
+=== app.rs ===
+
+// SPDX-License-Identifier: MPL-2.0
+
+use crate::config::Config;
+use crate::llm::LLM;
+use cosmic::app::{Core, Task};
+use cosmic::cosmic_theme;
+use cosmic::cosmic_theme::palette::encoding::srgb;
+use cosmic::cosmic_theme::palette::{rgb, Srgb};
+use cosmic::iced::theme::Palette;
+use cosmic::iced::{Length, Subscription};
+use cosmic::theme;
+use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
+use cosmic::widget::{markdown, Space};
+use cosmic::Apply;
+use cosmic::Element;
+use cosmic::Theme;
+use derivative::Derivative;
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Messages {
+    value: Vec<ChatMessage>,
+}
+
+#[derive(Derivative, Default, Derivative)]
+// #[derivative(Debug)]
+pub struct AppModel {
+    config: Config,
+    error: Option<String>,
+    input_value: String,
+    llm_fs: Option<LLM>,
+    messages: Messages,
+    parsed_messages: Vec<Vec<markdown::Item>>,
+    #[derivative(Debug = "ignore")]
+    core: Core,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct ChatMessage {
+    content: String,
+    is_user: bool,
+}
+
+#[derive(Debug, Clone)]
+pub enum Message {
+    InputChanged(String),
+    SendMessage,
+    UpdateConfig(Config),
+    LLMFSInitialized(LLM),
+    ReceivedResponse(String),
+    Error(String),
+    LinkClicked(markdown::Url),
+}
+
+impl cosmic::Application for AppModel {
+    type Executor = cosmic::executor::Default;
+    type Flags = ();
+    type Message = Message;
+    const APP_ID: &'static str = "com.waffles.llming.app";
+
+    fn core(&self) -> &Core {
+        &self.core
+    }
+
+    fn core_mut(&mut self) -> &mut Core {
+        &mut self.core
+    }
+
+    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Message>) {
+        let app = AppModel {
+            core,
+            config: Config::default(),
+            messages: Messages::default(),
+            input_value: String::new(),
+            llm_fs: None,
+            parsed_messages: Vec::new(),
+            error: None, // Initialize error state
+        };
+
+        let init_task = Task::future(async move {
+            let addr: SocketAddr = "[::1]:3456".parse().unwrap();
+            let allowed_paths = vec![
+                "/home/waffles".to_string(),
+                "/home/waffles/code".to_string(),
+            ];
+
+            match LLM::new(addr, allowed_paths).await {
+                Ok(llm_fs) => cosmic::app::Message::App(Message::LLMFSInitialized(llm_fs)),
+                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
+            }
+        });
+
+        (app, init_task)
+    }
+
+    fn subscription(&self) -> Subscription<Message> {
+        Subscription::none()
+    }
+
+    fn update(&mut self, message: Message) -> Task<Message> {
+        match message {
+            Message::InputChanged(value) => {
+                self.input_value = value;
+                Task::none()
+            }
+            Message::SendMessage => {
+                if !self.input_value.trim().is_empty() {
+                    let message = ChatMessage {
+                        content: self.input_value.to_owned(),
+                        is_user: true,
+                    };
+                    self.parsed_messages
+                        .push(markdown::parse(&message.content).collect());
+
+                    self.messages.value.push(message);
+
+                    if let Some(llm_fs) = self.llm_fs.to_owned() {
+                        let input = serde_json::to_string(&self.messages.value).unwrap();
+                        self.input_value.clear();
+
+                        return Task::future(async move {
+                            match llm_fs.chat(&input).await {
+                                Ok(response) => {
+                                    cosmic::app::Message::App(Message::ReceivedResponse(response))
+                                }
+                                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
+                            }
+                        });
+                    }
+                }
+                Task::none()
+            }
+            Message::LLMFSInitialized(llm_fs) => {
+                self.llm_fs = Some(llm_fs);
+                Task::none()
+            }
+            Message::ReceivedResponse(response) => {
+                self.parsed_messages
+                    .push(markdown::parse(&response).collect());
+
+                self.messages.value.push(ChatMessage {
+                    content: response,
+                    is_user: false,
+                });
+                Task::none()
+            }
+            Message::Error(error) => {
+                self.error = Some(error.clone()); // Set error state
+                self.messages.value.push(ChatMessage {
+                    content: format!("Error: {}", error),
+                    is_user: false,
+                });
+                Task::none()
+            }
+            Message::UpdateConfig(config) => {
+                self.config = config;
+                Task::none()
+            }
+            Message::LinkClicked(url) => {
+                println!("Link clicked: {}", url);
+                Task::none()
+            }
+        }
+    }
+
+    fn view(&self) -> Element<Message> {
+        let cosmic_theme::Spacing {
+            space_xxs,
+            space_m,
+            space_l,
+            ..
+        } = theme::active().cosmic().spacing;
+
+        let messages = column::with_children(
+            self.messages
+                .value
+                .iter()
+                .enumerate()
+                .map(|(index, message)| {
+                    // Add bounds checking
+                    let content = self
+                        .parsed_messages
+                        .get(index)
+                        .map(|parsed| {
+                            markdown::view(
+                                parsed,
+                                markdown::Settings::default(),
+                                markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
+                            )
+                            .map(Message::LinkClicked)
+                        })
+                        .unwrap_or_else(|| text::Text::new("Error: Failed to load message").into());
+
+                    let message_content = container(content).padding(10).width(Length::Fill);
+
+                    container::Container::new(message_content)
+                        .width(Length::Fill)
+                        .align_x(if message.is_user {
+                            cosmic::iced::alignment::Alignment::End
+                        } else {
+                            cosmic::iced::alignment::Alignment::Start
+                        })
+                        .into()
+                })
+                .collect(),
+        )
+        .padding(space_m);
+
+        // Add error display if present
+        let mut content = column::with_capacity(3);
+
+        if let Some(error) = &self.error {
+            content = content.push(container(text(error)));
+        }
+
+        // Input row with text input and send button
+        let input = row::with_capacity(2)
+            .spacing(space_xxs)
+            .push(
+                text_input::text_input("Type a message...", &self.input_value)
+                    .on_input(Message::InputChanged)
+                    .on_submit(Message::SendMessage)
+                    // .padding(space_m)
+                    .width(Length::Fill),
+            )
+            .push(
+                button::standard("Send")
+                    .on_press(Message::SendMessage)
+                    // .padding(space_m)
+                    .width(Length::Fixed(100.0)),
+            );
+
+        content = content
+            .push(cosmic::iced_widget::Scrollable::new(messages).height(Length::Fill))
+            .push(
+                container::Container::new(input)
+                    .padding(space_m)
+                    .width(Length::Fill),
+            );
+
+        container::Container::new(content)
+            .width(Length::Fill)
+            .height(Length::Fill)
+            .apply(Element::from)
+    }
+}
+
+
+=== prompts/system.txt ===
+
+You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directories or files from /home/waffles. When users request file operations, format your response like this:
+
+I'll help you with that. Let me perform the operation:
+
+{{{
+{
+    "operation": "files.list_directory",
+    "parameters": {
+        "path": "/absolute/path/here"
+    }
+}
+}}}
+
+Note:
+- The JSON must be properly formatted with quotes around strings
+- The entire JSON object must be wrapped in {{{ }}}
+- Use correct JSON syntax with commas between fields
+- Always use absolute paths
+- Include both 'operation' and 'parameters' fields
+
+Available operations:
+
+1. List directory:
+{
+    "operation": "files.list_directory",
+    "parameters": {
+        "path": "/path/to/directory"
+    }
+}
+
+2. Search files:
+{
+    "operation": "files.search_files",
+    "parameters": {
+        "path": "/path/to/search",
+        "pattern": "search-pattern"
+    }
+}
+
+3. Read file:
+{
+    "operation": "files.read_file",
+    "parameters": {
+        "path": "/path/to/file"
+    }
+}
+
+4. Write file:
+{
+    "operation": "files.write_file",
+    "parameters": {
+        "path": "/path/to/file",
+        "content": "content to write"
+    }
+}
+
+=== llm/llm.rs ===
+
+use anyhow::Result;
+use serde_json::Value;
+use std::net::SocketAddr;
+use tokio::time::Duration;
+use tracing::{debug, error, info, warn};
+
+use super::anthropic::AnthropicClient;
+use super::deepseek::DeepSeekClient;
+use crate::{llm::models::model::ModelClient, mcp::*};
+
+#[derive(Clone, Debug)]
+pub struct LLM {
+    llm: AnthropicClient,
+    mcp_client: MCPClient,
+    mcp_server: MCPServer,
+}
+
+impl LLM {
+    pub async fn new(addr: SocketAddr, allowed_paths: Vec<String>) -> Result<Self> {
+        info!("Initializing LLM with mcp servers: [filesystem]");
+
+        // Create and start the filesystem MCP server
+        let mcp_server = create_filesystem_mcp_server(addr, allowed_paths).await?;
+
+        // Start the server in a separate task and wait for it to be ready
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let server_handle = mcp_server.clone();
+
+        tokio::spawn(async move {
+            debug!("Server task starting");
+            tx.send(()).expect("Failed to send server ready signal");
+
+            if let Err(e) = server_handle.serve().await {
+                error!("MCP server error: {}", e);
+            }
+        });
+
+        // Wait for the server to signal it's ready
+        rx.await?;
+        debug!("Received server ready signal");
+
+        // Add a small delay to ensure the server is fully up
+        tokio::time::sleep(Duration::from_millis(100)).await;
+
+        // Create client with explicit HTTP
+        let mut mcp_client = MCPClient::new(&format!("http://{}", addr));
+
+        // More robust connection retry logic
+        let mut backoff = Duration::from_millis(100);
+        let max_retries = 5;
+        let mut attempt = 0;
+
+        while attempt < max_retries {
+            match mcp_client.connect().await {
+                Ok(_) => {
+                    info!("Successfully connected to MCP server");
+                    break;
+                }
+                Err(e) => {
+                    attempt += 1;
+                    if attempt == max_retries {
+                        error!("Failed to connect after {} attempts", max_retries);
+                        return Err(anyhow::anyhow!(
+                            "Failed to connect to MCP server after {} attempts: {}",
+                            max_retries,
+                            e
+                        ));
+                    }
+                    warn!(
+                        "Connection attempt {} failed, retrying in {:?}...",
+                        attempt, backoff
+                    );
+                    tokio::time::sleep(backoff).await;
+                    backoff *= 2; // Exponential backoff
+                }
+            }
+        }
+
+        let llm = AnthropicClient::new();
+        Ok(Self {
+            llm,
+            mcp_client,
+            mcp_server,
+        })
+    }
+
+    pub async fn chat(&self, message: &str) -> Result<String> {
+        debug!("Processing chat message: {}", message);
+        let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
+
+        // let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
+        let system_prompt = format!(
+            r#"
+            System Prompt:
+            You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directroies or files from /home/waffles. When users request file operations. You also act as a general chat interface and will answer any questions.
+                When performing operations, use the following format:
+    {{{{
+        "operation": "operation_name",
+        "parameters": {{
+            // operation parameters
+        }}
+    }}}}
+            Available operations:
+            1. List directory:
+          {{
+                "operation": "files.list_directory",
+                "parameters": {{
+                    "path": "/path/to/directory"
+        }}
+        }}
+
+            {}
+
+            "#,
+            mcp_tool_descriptions
+        );
+
+        // First, send the combined prompt to the LLM
+        debug!("Sending enhanced prompt to LLM");
+        let enhanced_message = format!("{}{}", system_prompt, message);
+
+        let initial_response = match self.llm.send_message(&enhanced_message).await {
+            Ok(response) => response.to_string(),
+            Err(e) => {
+                error!("LLM request failed: {}", e);
+                return Err(anyhow::anyhow!("Failed to get response from LLM: {}", e));
+            }
+        };
+
+        debug!("Got initial LLM response: {}", initial_response);
+
+        // Extract and execute any file operations
+        let operations = self.extract_operations(&initial_response);
+        debug!("Extracted {} operations from response", operations.len());
+        for op in &operations {
+            debug!("Operation: {:?}", op);
+        }
+        let mut final_response = initial_response.clone();
+
+        if operations.is_empty() {
+            debug!("No file operations found in response");
+            return Ok(final_response);
+        }
+
+        debug!("Found {} operations to execute", operations.len());
+        for op in &operations {
+            debug!("Executing operation: {:?}", op);
+            match self.execute_operation(op.clone()).await {
+                Ok(result) => {
+                    debug!("Operation succeeded: {:?}", result);
+
+                    // Format the result in a markdown-friendly way
+                    let result_str = match serde_json::to_string_pretty(&result) {
+                        Ok(s) => s,
+                        Err(e) => {
+                            error!("Failed to format result: {}", e);
+                            continue;
+                        }
+                    };
+
+                    final_response.push_str("\n\n**Operation Result:**\n```json\n");
+                    final_response.push_str(&result_str);
+                    final_response.push_str("\n```\n");
+
+                    // For complex results, get LLM to analyze them
+                    if result_str.len() > 100 {
+                        debug!("Getting LLM analysis of operation result");
+                        let analysis_prompt = format!(
+                            "Analyze this operation result and explain its key points:\n{}",
+                            result_str
+                        );
+
+                        if let Ok(analysis) = self.llm.send_message(&analysis_prompt).await {
+                            final_response.push_str("\n**Analysis:**\n");
+                            final_response.push_str(&analysis);
+                        }
+                    }
+                }
+                Err(e) => {
+                    error!("Operation failed: {}", e);
+                    final_response.push_str("\n\n**Operation Failed:**\n```\n");
+                    final_response.push_str(&e.to_string());
+                    final_response.push_str("\n```\n");
+                }
+            }
+        }
+
+        // If we executed any operations, get a final summary from the LLM
+        if !operations.is_empty() {
+            debug!("Getting final summary from LLM");
+            let summary_prompt = format!(
+                    "Based on the file operations and their results above, provide a final summary and any relevant recommendations for the user's query: {}",
+                    message
+                );
+
+            if let Ok(summary) = self.llm.send_message(&summary_prompt).await {
+                final_response.push_str("\n\n**Summary:**\n");
+                final_response.push_str(&summary);
+            }
+        }
+
+        Ok(final_response)
+    }
+
+    async fn execute_operation(&self, operation: Operation) -> Result<serde_json::Value> {
+        debug!(
+            "Calling MCP function: {} with params: {:?}",
+            operation.name, operation.parameters
+        );
+
+        match self
+            .mcp_client
+            .call_function("files", &operation.name, operation.parameters)
+            .await
+        {
+            Ok(result) => {
+                debug!("MCP function call succeeded");
+                Ok(result.result)
+            }
+            Err(e) => {
+                error!("MCP function call failed: {}", e);
+                Err(anyhow::anyhow!("Function call failed: {}", e))
+            }
+        }
+    }
+
+    fn extract_operations(&self, response: &str) -> Vec<Operation> {
+        let mut operations = Vec::new();
+        let mut start_idx = 0;
+
+        while let Some(start) = response[start_idx..].find("{{{{") {
+            if let Some(end) = response[start_idx + start..].find("}}}}") {
+                let json_str = &response[start_idx + start + 3..start_idx + start + end].trim();
+                debug!("Extracted JSON string: {}", json_str);
+
+                // First try parsing as-is
+                let parse_result = serde_json::from_str::<Value>(json_str).or_else(|_| {
+                    // If that fails, try some cleanup
+                    let cleaned = json_str
+                        .replace('\n', "")
+                        .replace('\r', "")
+                        .trim()
+                        .to_string();
+                    serde_json::from_str(&cleaned)
+                });
+
+                match parse_result {
+                    Ok(value) => {
+                        if let (Some(op), Some(params)) =
+                            (value["operation"].as_str(), value.get("parameters"))
+                        {
+                            debug!("Parsed operation: {} with params: {:?}", op, params);
+                            operations.push(Operation {
+                                name: op.trim_start_matches("files.").to_string(),
+                                parameters: params.clone(),
+                            });
+                        } else {
+                            warn!("Missing operation or parameters in JSON: {}", json_str);
+                        }
+                    }
+                    Err(e) => {
+                        warn!(
+                            "Failed to parse operation JSON: {} - Error: {}",
+                            json_str, e
+                        );
+                        // If basic cleanup didn't work, try more aggressive fixing
+                        if let Some(fixed_json) = try_fix_json(json_str) {
+                            debug!("Attempting to parse fixed JSON: {}", fixed_json);
+                            if let Ok(value) = serde_json::from_str::<Value>(&fixed_json) {
+                                if let (Some(op), Some(params)) =
+                                    (value["operation"].as_str(), value.get("parameters"))
+                                {
+                                    debug!("Successfully parsed fixed JSON");
+                                    operations.push(Operation {
+                                        name: op.trim_start_matches("files.").to_string(),
+                                        parameters: params.clone(),
+                                    });
+                                }
+                            }
+                        }
+                    }
+                }
+                start_idx += start + end + 3;
+            } else {
+                break;
+            }
+        }
+
+        debug!("Extracted {} operations from response", operations.len());
+        operations
+    }
+}
+
+fn try_fix_json(json_str: &str) -> Option<String> {
+    let mut fixed = json_str.to_string();
+
+    // Remove any leading/trailing whitespace
+    fixed = fixed.trim().to_string();
+
+    // Remove any extra whitespace between elements
+    fixed = fixed.replace(": ", ":");
+    fixed = fixed.replace(" :", ":");
+
+    // Ensure proper quoting of keys
+    for key in &["operation", "parameters", "path", "pattern", "content"] {
+        fixed = fixed.replace(&format!("{}:", key), &format!("\"{}\":", key));
+        fixed = fixed.replace(&format!("{} :", key), &format!("\"{}\":", key));
+    }
+
+    // Ensure proper quoting of string values
+    if let Some(op_idx) = fixed.find("\"operation\":") {
+        if let Some(colon_idx) = fixed[op_idx..].find(':') {
+            let after_colon = &fixed[op_idx + colon_idx + 1..];
+            if let Some(comma_idx) = after_colon.find(',') {
+                let value = &after_colon[..comma_idx].trim();
+                if !value.starts_with('"') {
+                    fixed = fixed.replace(value, &format!("\"{}\"", value));
+                }
+            }
+        }
+    }
+
+    // Ensure object has curly braces
+    if !fixed.starts_with('{') {
+        fixed = format!("{{{}", fixed);
+    }
+    if !fixed.ends_with('}') {
+        fixed = format!("{}}}", fixed);
+    }
+
+    // Verify the result is valid JSON
+    if serde_json::from_str::<Value>(&fixed).is_ok() {
+        Some(fixed)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone)]
+struct Operation {
+    name: String,
+    parameters: Value,
+}
+
+
+=== llm/mod.rs ===
+
+mod llm;
+mod models;
+
+pub use llm::LLM;
+pub use models::anthropic;
+pub use models::deepseek;
+
+
+=== llm/models/anthropic.rs ===
+
+use super::model::{
+    APIError, Message, ModelClient, ModelRequestOptions, ModelResponse, TextContent,
+};
+use crate::http::HttpClient;
+use anyhow::Result;
+use hyper::Method;
+use serde::{Deserialize, Serialize};
+use std::env;
+use tracing::{debug, error, info};
+
+#[derive(Clone, Debug)]
+pub struct AnthropicClient {
+    client: HttpClient,
+    api_key: String,
+    model_id: String,
+}
+
+#[derive(Serialize, Debug, Clone)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<Message>,
+    max_tokens: Option<u32>,
+    system: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct ChatResponse {
+    id: String,
+    content: Vec<Content>,
+    model: String,
+    role: String,
+    #[serde(default)]
+    choices: Vec<Choice>,
+    #[serde(default)]
+    error: Option<APIError>,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Content {
+    #[serde(rename = "type")]
+    content_type: String,
+    text: String,
+}
+
+#[derive(Deserialize, Debug)]
+pub struct Choice {
+    index: u32,
+    message: Message,
+    finish_reason: Option<String>,
+}
+
+impl ModelClient for AnthropicClient {
+    type MessageType = TextContent;
+    type ResponseType = ChatResponse;
+
+    fn new() -> Self {
+        let api_key = env::var("ANTHROPIC_API_KEY").expect("ANTHROPIC_API_KEY must be set");
+        info!("Initializing Anthropic client");
+
+        let client = HttpClient::new()
+            .with_header("x-api-key", &api_key)
+            .with_header("anthropic-version", "2023-06-01");
+
+        Self {
+            client,
+            api_key,
+            model_id: "claude-3-5-sonnet-latest".to_string(),
+        }
+    }
+
+    fn get_http_client(&self) -> &HttpClient {
+        &self.client
+    }
+
+    fn get_model_id(&self) -> &str {
+        &self.model_id
+    }
+
+    async fn send_message(&self, content: &str) -> Result<String> {
+        let response: ChatResponse = self
+            .client
+            .send_request(
+                Method::POST,
+                "https://api.anthropic.com/v1/messages",
+                Some(ChatRequest {
+                    model: self.model_id.clone(),
+                    messages: vec![Message {
+                        role: "user".to_string(),
+                        content: content.to_string(),
+                    }],
+                    max_tokens: Some(2048),
+                    system: Some("You are a helpful AI assistant.".to_string()),
+                }),
+            )
+            .await?;
+
+        debug!("Raw API response: {:?}", response);
+
+        // Try content first, fall back to choices
+        if !response.content.is_empty() {
+            Ok(response.content[0].text.clone())
+        } else if !response.choices.is_empty() {
+            Ok(response.choices[0].message.content.clone())
+        } else {
+            Err(anyhow::anyhow!("No content in response"))
+        }
+    }
+
+    async fn send_message_with_options(
+        &self,
+        content: &str,
+        options: ModelRequestOptions,
+    ) -> Result<String> {
+        debug!("Sending message to Anthropic: {}", content);
+
+        let request = ChatRequest {
+            model: self.model_id.clone(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: content.to_string(),
+            }],
+            max_tokens: options.max_tokens,
+            system: Some("You are a helpful AI assistant.".to_string()),
+        };
+
+        debug!("Request payload: {:?}", request);
+
+        let response: ChatResponse = self
+            .client
+            .send_request(
+                Method::POST,
+                "https://api.anthropic.com/v1/messages",
+                Some(request),
+            )
+            .await?;
+
+        debug!("Raw response: {:?}", response);
+
+        if let Some(error) = response.error {
+            error!("Anthropic API error: {:?}", error);
+            return Err(anyhow::anyhow!(
+                "API Error: {} (type: {:?}, code: {:?})",
+                error.message,
+                error.r#type,
+                error.code
+            ));
+        }
+
+        if response.choices.is_empty() {
+            error!("Anthropic API returned no choices");
+            return Err(anyhow::anyhow!("No response from model"));
+        }
+
+        let content = response.choices[0].message.content.clone();
+        let text = &content;
+        debug!("Extracted content: {}", content);
+        Ok(text.to_owned())
+    }
+
+    async fn send_conversation(&self, messages: Vec<Message>) -> Result<String> {
+        let request = ChatRequest {
+            model: self.model_id.clone(),
+            messages,
+            max_tokens: Some(2048),
+            system: Some("You are a helpful AI assistant.".to_string()),
+        };
+
+        let response: ChatResponse = self
+            .client
+            .send_request(
+                Method::POST,
+                "https://api.anthropic.com/v1/messages",
+                Some(request),
+            )
+            .await?;
+
+        if response.choices.is_empty() {
+            return Err(anyhow::anyhow!("No response from model"));
+        }
+
+        let text = response.choices[0].message.content.clone();
+
+        Ok(text)
+    }
+
+    fn extract_content(&self, response: &ChatResponse) -> Result<String> {
+        if !response.content.is_empty() {
+            Ok(response.content[0].text.clone())
+        } else {
+            Err(anyhow::anyhow!("No content in response"))
+        }
+    }
+}
+
+
+=== llm/models/model.rs ===
+
+use crate::http::HttpClient;
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::fmt::Debug;
+
+/// Common message structure used across different LLM implementations
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct Message {
+    pub role: String,
+    pub content: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct TextContent {
+    #[serde(rename = "type")]
+    pub content_type: String,
+    pub text: String,
+}
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub struct ModelContent {
+    pub content: String,
+}
+
+pub trait ModelMessage {
+    fn get_content(&self) -> String;
+}
+
+impl ModelMessage for Message {
+    fn get_content(&self) -> String {
+        self.content.clone()
+    }
+}
+
+impl ModelMessage for TextContent {
+    fn get_content(&self) -> String {
+        self.text.clone()
+    }
+}
+
+/// Common error structure for API responses
+#[derive(Deserialize, Debug)]
+pub struct APIError {
+    pub message: String,
+    pub r#type: Option<String>,
+    pub code: Option<String>,
+}
+
+/// Configuration options for model requests
+#[derive(Serialize, Debug, Clone)]
+pub struct ModelRequestOptions {
+    pub temperature: Option<f32>,
+    pub max_tokens: Option<u32>,
+    pub stream: Option<bool>,
+}
+
+impl Default for ModelRequestOptions {
+    fn default() -> Self {
+        Self {
+            temperature: Some(0.7),
+            max_tokens: Some(2048),
+            stream: Some(false),
+        }
+    }
+}
+
+pub trait ModelClient: Send + Sync + Debug {
+    type MessageType: ModelMessage;
+    type ResponseType: Debug;
+
+    /// Initialize a new instance of the model client
+    fn new() -> Self
+    where
+        Self: Sized;
+
+    /// Get the client's HTTP instance
+    fn get_http_client(&self) -> &HttpClient;
+
+    /// Get the model identifier
+    fn get_model_id(&self) -> &str;
+
+    /// Send a message to the model and get a response
+    async fn send_message(&self, content: &str) -> Result<String> {
+        self.send_message_with_options(content, ModelRequestOptions::default())
+            .await
+    }
+
+    /// Send a message with custom options
+    async fn send_message_with_options(
+        &self,
+        content: &str,
+        options: ModelRequestOptions,
+    ) -> Result<String>;
+
+    fn extract_content(&self, response: &Self::ResponseType) -> Result<String>;
+
+    /// Send a conversation (multiple messages) to the model
+    async fn send_conversation(&self, messages: Vec<Message>) -> Result<String>;
+}
+
+/// Base implementation for model responses
+#[derive(Deserialize, Debug)]
+pub struct ModelResponse<T> {
+    pub id: Option<String>,
+    pub choices: Vec<T>,
+    pub error: Option<APIError>,
+}
+
+/// Helper function to create a user message
+pub fn create_user_message(content: &str) -> Message {
+    Message {
+        role: "user".to_string(),
+        content: content.to_string(),
+    }
+}
+
+/// Helper function to create an assistant message
+pub fn create_assistant_message(content: &str) -> Message {
+    Message {
+        role: "assistant".to_string(),
+        content: content.to_string(),
+    }
+}
+
+/// Helper function to create a system message
+pub fn create_system_message(content: &str) -> Message {
+    Message {
+        role: "system".to_string(),
+        content: content.to_string(),
+    }
+}
+
+
+=== llm/models/deepseek.rs ===
+
+use super::model::{ModelClient, ModelRequestOptions};
+use crate::http::HttpClient;
+use anyhow::Result;
+use hyper::Method;
+use serde::{Deserialize, Serialize};
+use std::env;
+use tracing::{debug, error, info};
+
+#[derive(Clone, Default, Debug)]
+pub struct DeepSeekClient {
+    client: HttpClient,
+    api_key: String,
+}
+
+#[derive(Serialize, Debug)]
+struct ChatRequest {
+    model: String,
+    messages: Vec<Message>,
+    temperature: Option<f32>,
+    max_tokens: Option<u32>,
+    stream: Option<bool>,
+}
+
+use super::model::Message;
+
+#[derive(Deserialize, Debug)]
+pub struct ChatResponse {
+    id: Option<String>,
+    choices: Vec<Choice>,
+    error: Option<APIError>,
+}
+
+#[derive(Deserialize, Debug)]
+struct Choice {
+    message: Message,
+    finish_reason: Option<String>,
+}
+
+#[derive(Deserialize, Debug)]
+struct APIError {
+    message: String,
+    r#type: Option<String>,
+    code: Option<String>,
+}
+
+impl DeepSeekClient {
+    pub fn new() -> Self {
+        let api_key = env::var("DEEPSEEK_API_KEY").expect("DEEPSEEK_API_KEY must be set");
+        info!("Initializing DeepSeek client");
+
+        let client = HttpClient::new()
+            .with_header("Authorization", &format!("Bearer {}", api_key))
+            .with_header("Content-Type", "application/json");
+
+        Self { client, api_key }
+    }
+
+    pub async fn send_message(&self, content: &str) -> Result<String> {
+        debug!("Sending message to DeepSeek API: {}", content);
+
+        let request = ChatRequest {
+            model: "deepseek-chat".to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: content.to_string(),
+            }],
+            max_tokens: Some(2048),
+            temperature: Some(0.7),
+            stream: Some(false),
+        };
+
+        debug!("Request payload: {:?}", request);
+
+        match self
+            .client
+            .send_request::<ChatRequest, ChatResponse>(
+                Method::POST,
+                "https://api.deepseek.com/v1/chat/completions",
+                Some(request),
+            )
+            .await
+        {
+            Ok(response) => {
+                if let Some(error) = response.error {
+                    error!("DeepSeek API error: {:?}", error);
+                    return Err(anyhow::anyhow!(
+                        "API Error: {} (type: {:?}, code: {:?})",
+                        error.message,
+                        error.r#type,
+                        error.code
+                    ));
+                }
+
+                if response.choices.is_empty() {
+                    error!("DeepSeek API returned no choices");
+                    return Err(anyhow::anyhow!("No response from model"));
+                }
+
+                let content = response.choices[0].message.content.clone();
+                debug!("Received response from DeepSeek: {}", content);
+                Ok(content)
+            }
+            Err(e) => {
+                error!("Failed to send message to DeepSeek: {}", e);
+                Err(anyhow::anyhow!("Failed to send message: {}", e))
+            }
+        }
+    }
+}
+
+impl ModelClient for DeepSeekClient {
+    type MessageType = Message;
+    type ResponseType = ChatResponse;
+
+    fn new() -> Self {
+        Self::new()
+    }
+
+    fn get_http_client(&self) -> &HttpClient {
+        &self.client
+    }
+
+    fn get_model_id(&self) -> &str {
+        "deepseek-chat"
+    }
+
+    async fn send_message_with_options(
+        &self,
+        content: &str,
+        options: ModelRequestOptions,
+    ) -> Result<String> {
+        let request = ChatRequest {
+            model: self.get_model_id().to_string(),
+            messages: vec![Message {
+                role: "user".to_string(),
+                content: content.to_string(),
+            }],
+            max_tokens: options.max_tokens,
+            temperature: options.temperature,
+            stream: Some(false),
+        };
+
+        self.send_message(content).await
+    }
+
+    async fn send_conversation(&self, messages: Vec<Message>) -> Result<String> {
+        let request = ChatRequest {
+            model: self.get_model_id().to_string(),
+            messages,
+            max_tokens: Some(2048),
+            temperature: Some(0.7),
+            stream: Some(false),
+        };
+
+        match self
+            .client
+            .send_request::<ChatRequest, ChatResponse>(
+                Method::POST,
+                "https://api.deepseek.com/v1/chat/completions",
+                Some(request),
+            )
+            .await
+        {
+            Ok(response) => self.extract_content(&response),
+            Err(e) => Err(anyhow::anyhow!("Failed to send conversation: {}", e)),
+        }
+    }
+
+    fn extract_content(&self, response: &ChatResponse) -> Result<String> {
+        response
+            .choices
+            .first()
+            .map(|c| c.message.content.clone())
+            .ok_or_else(|| anyhow::anyhow!("No content in response"))
+    }
+}
+
+
+=== llm/models/mod.rs ===
+
+pub mod anthropic;
+pub mod deepseek;
+pub mod model;
+
+
+=== config.rs ===
+
+use cosmic::cosmic_config::{self, ConfigGet, ConfigSet};
+use serde::{Deserialize, Serialize};
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Config {
+    pub window_pos: Option<(i32, i32)>,
+    pub window_size: Option<(u32, u32)>,
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            window_pos: None,
+            window_size: Some((800, 600)),
+        }
+    }
+}
+
+
+=== mcp/client.rs ===
+
+use anyhow::Result;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use tracing::{debug, error, info, warn};
+
+// MCP Protocol Types
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPFunction {
+    pub name: String,
+    pub description: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPTool {
+    pub name: String,
+    pub description: String,
+    pub functions: Vec<MCPFunction>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPPrompt {
+    pub name: String,
+    pub description: String,
+    pub template: String,
+    pub parameters: Option<serde_json::Value>,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct MCPServerInfo {
+    pub name: String,
+    pub version: String,
+    pub tools: Vec<MCPTool>,
+    pub prompts: Vec<MCPPrompt>,
+}
+
+impl MCPServerInfo {
+    pub fn new(
+        name: String,
+        version: String,
+        tools: Vec<MCPTool>,
+        prompts: Vec<MCPPrompt>,
+    ) -> Self {
+        Self {
+            name,
+            version,
+            tools,
+            prompts,
+        }
+    }
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MCPFunctionCall {
+    pub function: String,
+    pub parameters: serde_json::Value,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct MCPFunctionResult {
+    pub result: serde_json::Value,
+}
+
+#[derive(Clone, Debug)]
+pub struct MCPClient {
+    http_client: crate::http::HttpClient,
+    server_url: String,
+    server_info: Option<MCPServerInfo>,
+}
+
+impl MCPClient {
+    pub fn new(server_url: &str) -> Self {
+        info!("Creating new MCP client for server: {}", server_url);
+        Self {
+            http_client: crate::http::HttpClient::new()
+                .with_header("Content-Type", "application/json"),
+            server_url: server_url.to_string(),
+            server_info: None,
+        }
+    }
+
+    pub async fn connect(&mut self) -> Result<&MCPServerInfo> {
+        debug!("Attempting to connect to MCP server: {}", self.server_url);
+        match self
+            .http_client
+            .send_request(
+                hyper::Method::GET,
+                &format!("{}/mcp/info", self.server_url),
+                None::<()>,
+            )
+            .await
+        {
+            Ok(info) => {
+                debug!("Successfully retrieved server info");
+                self.server_info = Some(info);
+                Ok(self.server_info.as_ref().unwrap())
+            }
+            Err(e) => {
+                error!("Failed to connect to MCP server: {}", e);
+                Err(anyhow::anyhow!("Connection failed: {}", e))
+            }
+        }
+    }
+
+    pub async fn call_function<T: Serialize + std::fmt::Debug>(
+        &self,
+        tool_name: &str,
+        function_name: &str,
+        parameters: T,
+    ) -> Result<MCPFunctionResult> {
+        debug!(
+            "Calling function {}.{} with parameters: {:?}",
+            tool_name, function_name, parameters
+        );
+
+        let call = MCPFunctionCall {
+            function: format!("{}.{}", tool_name, function_name),
+            parameters: serde_json::to_value(parameters)?,
+        };
+
+        match self
+            .http_client
+            .send_request(
+                hyper::Method::POST,
+                &format!("{}/mcp/function", self.server_url),
+                Some(call),
+            )
+            .await
+        {
+            Ok(result) => {
+                debug!("Function call successful");
+                Ok(result)
+            }
+            Err(e) => {
+                error!("Function call failed: {}", e);
+                Err(anyhow::anyhow!("Function call failed: {}", e))
+            }
+        }
+    }
+
+    pub async fn get_prompt(&self, prompt_name: &str) -> Result<MCPPrompt> {
+        debug!("Retrieving prompt: {}", prompt_name);
+        self.http_client
+            .send_request(
+                hyper::Method::GET,
+                &format!("{}/mcp/prompt/{}", self.server_url, prompt_name),
+                None::<()>,
+            )
+            .await
+            .map_err(|e| {
+                error!("Failed to get prompt: {}", e);
+                anyhow::anyhow!("Failed to get prompt: {}", e)
+            })
+    }
+
+    pub async fn render_prompt<T: Serialize + std::fmt::Debug>(
+        &self,
+        prompt_name: &str,
+        parameters: T,
+    ) -> Result<String> {
+        debug!(
+            "Rendering prompt {} with parameters: {:?}",
+            prompt_name, parameters
+        );
+
+        #[derive(Serialize)]
+        struct RenderRequest<T> {
+            parameters: T,
+        }
+
+        #[derive(Deserialize)]
+        struct RenderResponse {
+            rendered: String,
+        }
+
+        let response: RenderResponse = self
+            .http_client
+            .send_request(
+                hyper::Method::POST,
+                &format!("{}/mcp/prompt/{}/render", self.server_url, prompt_name),
+                Some(RenderRequest { parameters }),
+            )
+            .await
+            .map_err(|e| {
+                error!("Failed to render prompt: {}", e);
+                anyhow::anyhow!("Failed to render prompt: {}", e)
+            })?;
+
+        Ok(response.rendered)
+    }
+}
+
+
+=== mcp/server.rs ===
+
+use anyhow::Result;
+use bytes::{Buf, Bytes};
+use http_body_util::{BodyExt, Full};
+use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
+use std::future::{Future, IntoFuture};
+use std::pin::Pin;
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+use super::client::{
+    MCPFunction, MCPFunctionCall, MCPFunctionResult, MCPPrompt, MCPServerInfo, MCPTool,
+};
+
+type AsyncFunctionHandler = Arc<
+    dyn Fn(serde_json::Value) -> Pin<Box<dyn Future<Output = Result<serde_json::Value>> + Send>>
+        + Send
+        + Sync,
+>;
+type PromptRenderer = Arc<dyn Fn(serde_json::Value) -> Result<String> + Send + Sync>;
+
+pub struct MCPServer {
+    info: MCPServerInfo,
+    functions: Arc<RwLock<HashMap<String, AsyncFunctionHandler>>>,
+    prompt_renderers: Arc<RwLock<HashMap<String, PromptRenderer>>>,
+    http_server: crate::http::HttpServer,
+}
+
+impl std::fmt::Debug for MCPServer {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MCPServer")
+            .field("info", &self.info)
+            .field("http_server", &self.http_server)
+            .finish()
+    }
+}
+
+impl MCPServer {
+    pub fn new(addr: std::net::SocketAddr, info: MCPServerInfo) -> Self {
+        Self {
+            info,
+            functions: Arc::new(RwLock::new(HashMap::new())),
+            prompt_renderers: Arc::new(RwLock::new(HashMap::new())),
+            http_server: crate::http::HttpServer::new(addr),
+        }
+    }
+
+    pub fn get_info(&self) -> &MCPServerInfo {
+        &self.info
+    }
+
+    pub async fn register_async_function<F, Fut>(
+        &self,
+        tool_name: &str,
+        function_name: &str,
+        handler: F,
+    ) where
+        F: Fn(serde_json::Value) -> Pin<Box<Fut>> + Send + Sync + 'static,
+        Fut: Future<Output = Result<serde_json::Value>> + Send + 'static,
+    {
+        let mut functions = self.functions.write().await;
+        functions.insert(
+            format!("{}.{}", tool_name, function_name),
+            Arc::new(move |params| Box::pin(handler(params).into_future())),
+        );
+    }
+
+    pub async fn register_prompt_renderer<F>(&self, prompt_name: &str, renderer: F)
+    where
+        F: Fn(serde_json::Value) -> Result<String> + Send + Sync + 'static,
+    {
+        let mut renderers = self.prompt_renderers.write().await;
+        renderers.insert(prompt_name.to_string(), Arc::new(renderer));
+    }
+
+    async fn handle_request(&self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>> {
+        match (req.method(), req.uri().path()) {
+            (&Method::GET, "/mcp/info") => crate::http::HttpServer::json_response(&self.info).await,
+
+            (&Method::POST, "/mcp/function") => {
+                let body = req.into_body();
+                let collected = body.collect().await?;
+                let bytes = collected.aggregate();
+                let call: MCPFunctionCall = serde_json::from_slice(bytes.chunk())?;
+
+                let functions = self.functions.read().await;
+                if let Some(handler) = functions.get(&call.function) {
+                    let result = handler(call.parameters).await?;
+                    crate::http::HttpServer::json_response(MCPFunctionResult { result }).await
+                } else {
+                    crate::http::HttpServer::error_response(
+                        StatusCode::NOT_FOUND,
+                        "Function not found",
+                    )
+                    .await
+                }
+            }
+
+            (&Method::GET, path) if path.starts_with("/mcp/prompt/") => {
+                let prompt_name = path.trim_start_matches("/mcp/prompt/");
+                if let Some(prompt) = self.info.prompts.iter().find(|p| p.name == prompt_name) {
+                    crate::http::HttpServer::json_response(prompt).await
+                } else {
+                    crate::http::HttpServer::error_response(
+                        StatusCode::NOT_FOUND,
+                        "Prompt not found",
+                    )
+                    .await
+                }
+            }
+
+            (&Method::POST, path)
+                if path.starts_with("/mcp/prompt/") && path.ends_with("/render") =>
+            {
+                let prompt_name = path
+                    .trim_start_matches("/mcp/prompt/")
+                    .trim_end_matches("/render")
+                    .to_string();
+
+                let body = req.into_body();
+                let collected = body.collect().await?;
+                let bytes = collected.aggregate();
+                let params: serde_json::Value = serde_json::from_slice(bytes.chunk())?;
+
+                let renderers = self.prompt_renderers.read().await;
+                if let Some(renderer) = renderers.get(&prompt_name) {
+                    let rendered = renderer(params)?;
+                    crate::http::HttpServer::json_response(serde_json::json!({
+                        "rendered": rendered
+                    }))
+                    .await
+                } else {
+                    crate::http::HttpServer::error_response(
+                        StatusCode::NOT_FOUND,
+                        "Prompt renderer not found",
+                    )
+                    .await
+                }
+            }
+
+            _ => crate::http::HttpServer::error_response(StatusCode::NOT_FOUND, "Not found").await,
+        }
+    }
+
+    pub async fn serve(&self) -> Result<()> {
+        let server = Arc::new(self.clone());
+        self.http_server
+            .serve(move |req| {
+                let server = server.clone();
+                async move { server.handle_request(req).await }
+            })
+            .await
+    }
+}
+
+impl Clone for MCPServer {
+    fn clone(&self) -> Self {
+        Self {
+            info: self.info.clone(),
+            functions: self.functions.clone(),
+            prompt_renderers: self.prompt_renderers.clone(),
+            http_server: self.http_server.clone(),
+        }
+    }
+}
+
+
+=== mcp/servers/filesystem.rs ===
+
+use anyhow::Result;
+use serde_json::{json, Value};
+use std::future::Future;
+use std::os::unix::fs::PermissionsExt;
+use std::path::PathBuf;
+use tokio::fs;
+use tracing::info;
+use serde::Serialize;
+use similar::{ChangeTag, TextDiff};
+use std::time::SystemTime;
+use super::super::client::{MCPFunction, MCPServerInfo, MCPTool};
+use super::super::server::MCPServer;
+
+#[derive(Debug, Serialize)]
+struct FileInfo {
+    size: u64,
+    created: SystemTime,
+    modified: SystemTime,
+    accessed: SystemTime,
+    is_directory: bool,
+    is_file: bool,
+    permissions: String,
+}
+
+#[derive(Debug)]
+struct EditOperation {
+    old_text: String,
+    new_text: String,
+}
+
+#[derive(Debug, Serialize)]
+struct TreeEntry {
+    name: String,
+    #[serde(rename = "type")]
+    entry_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    children: Option<Vec<TreeEntry>>,
+}
+
+pub async fn create_filesystem_mcp_server(
+    addr: std::net::SocketAddr,
+    allowed_paths: Vec<String>,
+) -> Result<MCPServer> {
+    info!(
+        "Creating filesystem MCP server with allowed paths: {:?}",
+        allowed_paths
+    );
+
+    let server = MCPServer::new(
+        addr,
+        MCPServerInfo {
+            name: "filesystem-server".to_string(),
+            version: "0.2.0".to_string(),
+            tools: vec![MCPTool {
+                name: "files".to_string(),
+                description: "File system operations".to_string(),
+                functions: get_tool_functions(),
+            }],
+            prompts: vec![],
+        },
+    );
+
+    register_handlers(&server, &allowed_paths).await?;
+    Ok(server)
+}
+
+fn get_tool_functions() -> Vec<MCPFunction> {
+    vec![
+        MCPFunction {
+            name: "read_file".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+            description:
+                "Read the complete contents of a file from the file system. \
+                Handles various text encodings and provides detailed error messages \
+                if the file cannot be read. Use this tool when you need to examine \
+                the contents of a single file. Only works within allowed directories."
+                .to_string(),
+        },
+        MCPFunction {
+            name: "write_file".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "content": {"type": "string"}
+                },
+                "required": ["path", "content"]
+            }),
+            description:
+                    "Create a new file or completely overwrite an existing file with new content. \
+                    Use with caution as it will overwrite existing files without warning. \
+                    Handles text content with proper encoding. Only works within allowed directories."
+                    .to_string(),
+        },
+        MCPFunction {
+            name: "edit_file".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "edits": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "oldText": {"type": "string"},
+                                "newText": {"type": "string"}
+                            }
+                        }
+                    },
+                    "dryRun": {"type": "boolean"}
+                },
+                "required": ["path", "edits"]
+            }),
+            description:
+                "Make line-based edits to a text file. Each edit replaces exact line sequences \
+                with new content. Returns a git-style diff showing the changes made. \
+                Only works within allowed directories.".to_string(),
+        },
+        MCPFunction {
+            name: "create_directory".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+            description: 
+                "Create a new directory or ensure a directory exists. Can create multiple \
+                nested directories in one operation. If the directory already exists, \
+                this operation will succeed silently. Perfect for setting up directory \
+                structures for projects or ensuring required paths exist. Only works within allowed directories."
+                .to_string(),
+        },
+        MCPFunction {
+            name: "list_directory".to_string(),
+            description: "Get a detailed listing of all files and directories in a specified path. Results clearly distinguish between files and directories with [FILE] and [DIR] prefixes. This tool is essential for understanding directory structure and finding specific files within a directory. Only works within allowed directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        },
+        MCPFunction {
+            name: "directory_tree".to_string(),
+            description: "Get a recursive tree view of files and directories as a JSON structure. Each entry includes 'name', 'type' (file/directory), and 'children' for directories. Files have no children array, while directories always have a children array (which may be empty). The output is formatted with 2-space indentation for readability. Only works within allowed directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        },
+        MCPFunction {
+            name: "move_file".to_string(),
+            description: "Move or rename files and directories. Can move files between directories and rename them in a single operation. If the destination exists, the operation will fail. Works across different directories and can be used for simple renaming within the same directory. Both source and destination must be within allowed directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "destination": {"type": "string"}
+                },
+                "required": ["source", "destination"]
+            }),
+        },
+        MCPFunction {
+            name: "search_files".to_string(),
+            description: "Recursively search for files and directories matching a pattern. Searches through all subdirectories from the starting path. The search is case-insensitive and matches partial names. Returns full paths to all matching items. Great for finding files when you don't know their exact location. Only searches within allowed directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string"},
+                    "pattern": {"type": "string"}
+                },
+                "required": ["path", "pattern"]
+            }),
+        },
+        MCPFunction {
+            name: "get_file_info".to_string(),
+            description: "Retrieve detailed metadata about a file or directory. Returns comprehensive information including size, creation time, last modified time, permissions, and type. This tool is perfect for understanding file characteristics without reading the actual content. Only works within allowed directories.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {"path": {"type": "string"}},
+                "required": ["path"]
+            }),
+        },
+        MCPFunction {
+            name: "list_allowed_directories".to_string(),
+            description: "Returns the list of directories that this server is allowed to access. Use this to understand which directories are available before trying to access files.".to_string(),
+            parameters: json!({
+                "type": "object",
+                "properties": {},
+                "required": []
+            }),
+        },
+    ]
+}
+
+async fn register_handlers(server: &MCPServer, allowed_paths: &[String]) -> Result<()> {
+    let paths_clone = allowed_paths.to_vec();
+
+    // Read file handler
+    server
+        .register_async_function("files", "read_file", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                let content = fs::read_to_string(path).await?;
+                Ok(json!({ "content": content }))
+            })
+        })
+        .await;
+
+    // Write file handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "write_file", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+                let content = params["content"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Content required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                fs::write(path, content).await?;
+                Ok(json!({ "success": true }))
+            })
+        })
+        .await;
+
+    // Edit file handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "edit_file", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+                let edits = params["edits"]
+                    .as_array()
+                    .ok_or_else(|| anyhow::anyhow!("Edits required"))?;
+                let dry_run = params["dryRun"].as_bool().unwrap_or(false);
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                let edit_ops: Vec<EditOperation> = edits
+                    .iter()
+                    .map(|edit| EditOperation {
+                        old_text: edit["oldText"].as_str().unwrap_or("").to_string(),
+                        new_text: edit["newText"].as_str().unwrap_or("").to_string(),
+                    })
+                    .collect();
+
+                let diff = apply_file_edits(path, &edit_ops, dry_run).await?;
+                Ok(json!({ "diff": diff }))
+            })
+        })
+        .await;
+
+    // Create directory handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "create_directory", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                fs::create_dir_all(path).await?;
+                Ok(json!({ "success": true }))
+            })
+        })
+        .await;
+
+    // List directory handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "list_directory", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                let mut entries = Vec::new();
+                let mut dir = fs::read_dir(path).await?;
+                while let Some(entry) = dir.next_entry().await? {
+                    let file_type = if entry.file_type().await?.is_dir() {
+                        "directory"
+                    } else {
+                        "file"
+                    };
+                    entries.push(json!({
+                        "name": entry.file_name().to_string_lossy(),
+                        "type": file_type
+                    }));
+                }
+                Ok(json!({ "entries": entries }))
+            })
+        })
+        .await;
+
+    // Directory tree handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "directory_tree", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                fn build_tree(path: &str) -> impl Future<Output = Result<Vec<TreeEntry>>> + '_ {
+                    Box::pin(async move {
+                        let mut entries = Vec::new();
+                        let mut dir = fs::read_dir(path).await?;
+                        while let Some(entry) = dir.next_entry().await? {
+                            let name = entry.file_name().to_string_lossy().into_owned();
+                            if entry.file_type().await?.is_dir() {
+                                entries.push(TreeEntry {
+                                    name,
+                                    entry_type: "directory".to_string(),
+                                    children: Some(
+                                        build_tree(&entry.path().to_string_lossy()).await?,
+                                    ),
+                                });
+                            } else {
+                                entries.push(TreeEntry {
+                                    name,
+                                    entry_type: "file".to_string(),
+                                    children: None,
+                                });
+                            }
+                        }
+                        Ok(entries)
+                    })
+                }
+
+                let tree = build_tree(path).await?;
+                Ok(json!({ "tree": tree }))
+            })
+        })
+        .await;
+
+    // Move file handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "move_file", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let source = params["source"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Source required"))?;
+                let destination = params["destination"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Destination required"))?;
+
+                if !is_path_allowed(source, &paths) || !is_path_allowed(destination, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                fs::rename(source, destination).await?;
+                Ok(json!({ "success": true }))
+            })
+        })
+        .await;
+
+    // Search files handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "search_files", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+                let pattern = params["pattern"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Pattern required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                let mut matches = Vec::new();
+                search_files_recursive(path, pattern, &mut matches).await?;
+                Ok(json!({ "matches": matches }))
+            })
+        })
+        .await;
+
+    // Get file info handler
+    let paths_clone = allowed_paths.to_vec();
+    server
+        .register_async_function("files", "get_file_info", move |params| {
+            let paths = paths_clone.clone();
+            Box::pin(async move {
+                let path = params["path"]
+                    .as_str()
+                    .ok_or_else(|| anyhow::anyhow!("Path required"))?;
+
+                if !is_path_allowed(path, &paths) {
+                    return Err(anyhow::anyhow!("Path not allowed"));
+                }
+
+                let metadata = fs::metadata(path).await?;
+                let info = FileInfo {
+                    size: metadata.len(),
+                    created: metadata.created()?,
+                    modified: metadata.modified()?,
+                    accessed: metadata.accessed()?,
+                    is_directory: metadata.is_dir(),
+                    is_file: metadata.is_file(),
+                    permissions: format!("{:o}", metadata.permissions().mode() & 0o777),
+                };
+                Ok(json!(info))
+            })
+        })
+        .await;
+
+    Ok(())
+}
+
+fn is_path_allowed(path: &str, allowed_paths: &[String]) -> bool {
+    let path = PathBuf::from(path);
+    let canonical_path = match path.canonicalize() {
+        Ok(p) => p,
+        Err(_) => {
+            if let Some(parent) = path.parent() {
+                match parent.canonicalize() {
+                    Ok(p) => p,
+                    Err(_) => return false,
+                }
+            } else {
+                return false;
+            }
+        }
+    };
+
+    for allowed in allowed_paths {
+        let allowed_path = PathBuf::from(allowed);
+        if let Ok(canonical_allowed) = allowed_path.canonicalize() {
+            if canonical_path.starts_with(canonical_allowed) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn search_files_recursive<'a>(
+    base_path: &'a str,
+    pattern: &'a str,
+    matches: &'a mut Vec<Value>,
+) -> std::pin::Pin<Box<dyn Future<Output = Result<()>> + Send + 'a>> {
+    Box::pin(async move {
+        let mut dir = fs::read_dir(base_path).await?;
+        while let Some(entry) = dir.next_entry().await? {
+            let path = entry.path();
+            if entry.file_type().await?.is_dir() {
+                search_files_recursive(&path.to_string_lossy(), pattern, matches).await?;
+            } else if path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy()
+                .to_lowercase()
+                .contains(&pattern.to_lowercase())
+            {
+                matches.push(json!(path.to_string_lossy()));
+            }
+        }
+        Ok(())
+    })
+}
+
+async fn apply_file_edits(path: &str, edits: &[EditOperation], dry_run: bool) -> Result<String> {
+    let content = fs::read_to_string(path).await?;
+    let mut modified = content.clone();
+
+    for edit in edits {
+        if modified.contains(&edit.old_text) {
+            modified = modified.replace(&edit.old_text, &edit.new_text);
+        } else {
+            return Err(anyhow::anyhow!("Could not find text to replace"));
+        }
+    }
+
+    let diff = TextDiff::from_lines(&content, &modified);
+    let diff_output = diff
+        .iter_all_changes()
+        .map(|change| {
+            let prefix = match change.tag() {
+                ChangeTag::Delete => "-",
+                ChangeTag::Insert => "+",
+                ChangeTag::Equal => " ",
+            };
+            format!("{}{}", prefix, change)
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if !dry_run {
+        fs::write(path, modified).await?;
+    }
+
+    Ok(diff_output)
+}
+
+
+=== mcp/servers/mod.rs ===
+
+pub mod filesystem;
+
+
+=== mcp/mod.rs ===
+
+mod client;
+mod server;
+mod servers;
+
+pub use client::MCPClient;
+pub use client::MCPServerInfo;
+pub use server::MCPServer;
+pub use servers::filesystem::create_filesystem_mcp_server;
+
+
+=== http/client.rs ===
+
+use anyhow::Result;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::{Method, Request, Uri};
+use hyper_tls::HttpsConnector;
+use hyper_util::{
+    client::legacy::{connect::HttpConnector, Client},
+    rt::TokioExecutor,
+};
+use serde::{de::DeserializeOwned, Serialize};
+use std::collections::HashMap;
+use tracing::{debug, error, info};
+
+#[derive(Clone, Debug)]
+pub struct HttpClient {
+    client: Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
+    headers: HashMap<String, String>,
+}
+
+impl Default for HttpClient {
+    fn default() -> Self {
+        let https = HttpsConnector::new();
+        Self {
+            client: Client::builder(TokioExecutor::new()).build(https),
+            headers: HashMap::new(),
+        }
+    }
+}
+
+impl HttpClient {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_header(mut self, key: &str, value: &str) -> Self {
+        self.headers.insert(key.to_string(), value.to_string());
+        self
+    }
+
+    pub async fn send_request<T, R>(&self, method: Method, url: &str, body: Option<T>) -> Result<R>
+    where
+        T: Serialize,
+        R: DeserializeOwned,
+    {
+        debug!("Sending {} request to {}", method, url);
+        let mut builder = Request::builder().method(method).uri(url);
+
+        // Add headers
+        for (key, value) in &self.headers {
+            debug!("Adding header: {} = {}", key, value);
+            builder = builder.header(key, value);
+        }
+
+        // Add body if present
+        let req = if let Some(body) = body {
+            let body_str = serde_json::to_string(&body)?;
+            debug!("Request body: {}", body_str);
+            builder
+                .header("content-type", "application/json")
+                .body(Full::new(Bytes::from(body_str)))?
+        } else {
+            builder.body(Full::new(Bytes::from("")))?
+        };
+
+        // Send request
+        debug!("Sending request");
+        let response = match self.client.request(req).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                error!("Failed to send request: {}", e);
+                return Err(anyhow::anyhow!("Failed to send request: {}", e));
+            }
+        };
+
+        // Check status
+        let status = response.status();
+        debug!("Response status: {}", status);
+
+        if !status.is_success() {
+            let body_bytes = response.collect().await?.to_bytes();
+            let error_body = String::from_utf8_lossy(&body_bytes);
+            error!("Request failed: {} - {}", status, error_body);
+            return Err(anyhow::anyhow!(
+                "Request failed with status {}: {}",
+                status,
+                error_body
+            ));
+        }
+
+        // Parse response
+        let body_bytes = response.collect().await?.to_bytes();
+        let body_str = String::from_utf8_lossy(&body_bytes);
+        debug!("Response body: {}", body_str);
+
+        match serde_json::from_str(&body_str) {
+            Ok(response_data) => {
+                debug!("Successfully parsed response");
+                Ok(response_data)
+            }
+            Err(e) => {
+                error!("Failed to parse response: {}", e);
+                Err(anyhow::anyhow!("Failed to parse response: {}", e))
+            }
+        }
+    }
+}
+
+
+=== http/server.rs ===
+
+use anyhow::Result;
+use bytes::Bytes;
+use http_body_util::{BodyExt, Full};
+use hyper::service::service_fn;
+use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper_util::rt::TokioIo;
+use serde::{de::DeserializeOwned, Serialize};
+use std::net::SocketAddr;
+use tokio::net::TcpListener;
+use tracing::{debug, error, info, warn};
+
+#[derive(Clone, Debug)]
+pub struct HttpServer {
+    addr: SocketAddr,
+}
+
+impl HttpServer {
+    pub fn new(addr: SocketAddr) -> Self {
+        Self { addr }
+    }
+
+    pub async fn serve<F, Fut>(&self, handler: F) -> Result<()>
+    where
+        F: Fn(Request<Incoming>) -> Fut + Clone + Send + Sync + 'static,
+        Fut: std::future::Future<Output = Result<Response<Full<Bytes>>>> + Send,
+    {
+        let listener = TcpListener::bind(self.addr).await?;
+        info!("HTTP Server listening on {}", self.addr);
+
+        loop {
+            match listener.accept().await {
+                Ok((tcp_stream, client_addr)) => {
+                    debug!("Accepted connection from: {}", client_addr);
+                    let io = TokioIo::new(tcp_stream);
+                    let handler = handler.clone();
+
+                    tokio::spawn(async move {
+                        let service = service_fn(move |req| {
+                            let handler = handler.clone();
+                            debug!("Handling request: {} {}", req.method(), req.uri());
+                            async move {
+                                match handler(req).await {
+                                    Ok(response) => {
+                                        debug!("Handler succeeded: {}", response.status());
+                                        Ok::<_, anyhow::Error>(response)
+                                    }
+                                    Err(e) => {
+                                        error!("Handler error: {}", e);
+                                        let error_response = Response::builder()
+                                            .status(StatusCode::INTERNAL_SERVER_ERROR)
+                                            .header("content-type", "application/json")
+                                            .body(Full::new(Bytes::from(format!(
+                                                "{{\"error\": \"{}\"}}",
+                                                e
+                                            ))))?;
+                                        Ok(error_response)
+                                    }
+                                }
+                            }
+                        });
+
+                        if let Err(err) = hyper::server::conn::http1::Builder::new()
+                            .serve_connection(io, service)
+                            .await
+                        {
+                            error!("Connection error: {:?}", err);
+                        }
+                    });
+                }
+                Err(e) => {
+                    error!("Accept error: {}", e);
+                    // Add a small delay before retrying
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                }
+            }
+        }
+    }
+
+    pub async fn json_response<T: Serialize>(data: T) -> Result<Response<Full<Bytes>>> {
+        let json = serde_json::to_string(&data)?;
+        debug!("Sending JSON response: {}", json);
+        Ok(Response::builder()
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(json)))?)
+    }
+
+    pub async fn error_response(
+        status: StatusCode,
+        message: &str,
+    ) -> Result<Response<Full<Bytes>>> {
+        warn!("Sending error response: {} - {}", status, message);
+        Ok(Response::builder()
+            .status(status)
+            .header("content-type", "application/json")
+            .body(Full::new(Bytes::from(format!(
+                "{{\"error\": \"{}\"}}",
+                message
+            ))))?)
+    }
+}
+
+
+=== http/mod.rs ===
+
+mod client;
+mod server;
+
+pub use client::HttpClient;
+pub use server::HttpServer;
+
+=== app_config/mod.rs ===
+
+mod app_config;
+
+pub use app_config::*;
+
+=== app_config/app_config.rs ===
+
+use serde::{Deserialize, Serialize};
+use std::net::SocketAddr;
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AppConfig {
+    pub ui: UIConfig,
+    pub mcp_servers: Vec<MCPServerConfig>,
+    pub llm: LLMConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UIConfig {
+    pub window_title: String,
+    pub theme: String,
+    pub default_width: u32,
+    pub default_height: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MCPServerConfig {
+    pub name: String,
+    pub server_type: String,
+    pub address: SocketAddr,
+    pub allowed_paths: Vec<PathBuf>,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LLMConfig {
+    pub model: String,
+    pub api_base_url: String,
+    pub timeout_seconds: u64,
+    pub system_prompt: String,
+}
+
+impl Default for AppConfig {
+    fn default() -> Self {
+        Self {
+            ui: UIConfig {
+                window_title: "Chat App".to_string(),
+                theme: "CatppuccinMocha".to_string(),
+                default_width: 1200,
+                default_height: 1000,
+            },
+            mcp_servers: vec![MCPServerConfig {
+                name: "filesystem".to_string(),
+                server_type: "filesystem".to_string(),
+                address: "[::1]:3456".parse().unwrap(),
+                allowed_paths: vec![
+                    PathBuf::from("/home/waffles"),
+                    PathBuf::from("/home/waffles/code"),
+                ],
+                enabled: true,
+            }],
+            llm: LLMConfig {
+                model: "deepseek".to_string(),
+                api_base_url: "https://api.deepseek.com/v1".to_string(),
+                timeout_seconds: 30,
+                system_prompt: include_str!("../prompts/system.txt").to_string(),
+            },
+        }
+    }
+}
+
+impl AppConfig {
+    pub fn load() -> Self {
+        // Try to load from config file
+        if let Ok(config_str) = std::fs::read_to_string("config.toml") {
+            if let Ok(config) = toml::from_str(&config_str) {
+                return config;
+            }
+        }
+
+        // Fall back to default if loading fails
+        Self::default()
+    }
+
+    pub fn save(&self) -> anyhow::Result<()> {
+        let config_str = toml::to_string_pretty(self)?;
+        std::fs::write("config.toml", config_str)?;
+        Ok(())
+    }
+}
+
+
+=== i18n.rs ===
+
+// SPDX-License-Identifier: {{ license }}
+
+//! Provides localization support for this crate.
+
+use std::sync::LazyLock;
+
+use i18n_embed::{
+    fluent::{fluent_language_loader, FluentLanguageLoader},
+    unic_langid::LanguageIdentifier,
+    DefaultLocalizer, LanguageLoader, Localizer,
+};
+use rust_embed::RustEmbed;
+
+/// Applies the requested language(s) to requested translations from the `fl!()` macro.
+pub fn init(requested_languages: &[LanguageIdentifier]) {
+    if let Err(why) = localizer().select(requested_languages) {
+        eprintln!("error while loading fluent localizations: {why}");
+    }
+}
+
+// Get the `Localizer` to be used for localizing this library.
+#[must_use]
+pub fn localizer() -> Box<dyn Localizer> {
+    Box::from(DefaultLocalizer::new(&*LANGUAGE_LOADER, &Localizations))
+}
+
+#[derive(RustEmbed)]
+#[folder = "i18n/"]
+struct Localizations;
+
+pub static LANGUAGE_LOADER: LazyLock<FluentLanguageLoader> = LazyLock::new(|| {
+    let loader: FluentLanguageLoader = fluent_language_loader!();
+
+    loader
+        .load_fallback_language(&Localizations)
+        .expect("Error while loading fallback language");
+
+    loader
+});
+
+/// Request a localized string by ID from the i18n/ directory.
+#[macro_export]
+macro_rules! fl {
+    ($message_id:literal) => {{
+        i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id)
+    }};
+
+    ($message_id:literal, $($args:expr),*) => {{
+        i18n_embed_fl::fl!($crate::i18n::LANGUAGE_LOADER, $message_id, $($args), *)
+    }};
+}
+
+

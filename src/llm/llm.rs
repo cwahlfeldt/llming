@@ -10,7 +10,7 @@ use crate::{llm::models::model::ModelClient, mcp::*};
 
 #[derive(Clone, Debug)]
 pub struct LLM {
-    llm: AnthropicClient,
+    llm: DeepSeekClient,
     mcp_client: MCPClient,
     mcp_server: MCPServer,
 }
@@ -76,7 +76,7 @@ impl LLM {
             }
         }
 
-        let llm = AnthropicClient::new();
+        let llm = DeepSeekClient::new();
         Ok(Self {
             llm,
             mcp_client,
@@ -88,36 +88,97 @@ impl LLM {
         debug!("Processing chat message: {}", message);
         let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
 
-        // let mcp_tool_descriptions = serde_json::to_string(self.mcp_server.get_info())?;
-        let system_prompt = format!(
-            r#"
-            System Prompt:
-            You are an expert coding assistant with full access to the user's filesystem (/home/waffles) and will always search any directroies or files from /home/waffles. When users request file operations. You also act as a general chat interface and will answer any questions.
-                When performing operations, use the following format:
-    {{{{
-        "operation": "operation_name",
-        "parameters": {{
-            // operation parameters
-        }}
-    }}}}
-            Available operations:
-            1. List directory:
-          {{
-                "operation": "files.list_directory",
-                "parameters": {{
-                    "path": "/path/to/directory"
-        }}
-        }}
+        let system_prompt = r#"
+            You are an expert Rust developer specializing in libcosmic GUI applications and filesystem operations. You understand best practices like SOLID, DRY, KISS, and YAGNI principles, and are well-versed in Rust 1.83.0 features.
+            
+            CAPABILITIES:
+            1. Filesystem Operations:
+            - Read files and directories
+            - Create and modify files
+            - Search through directories
+            - Move and rename files
+            - Get file metadata and information
 
-            {}
+            2. Code Generation:
+            - Write Rust code with libcosmic
+            - Create GUI applications
+            - Implement best practices
+            - Handle errors gracefully
+            - Write maintainable code
 
-            "#,
-            mcp_tool_descriptions
-        );
+            INTERACTION MODES:
+            1. Direct Chat Response:
+            - When asked for code examples or explanations
+            - For theoretical questions
+            - For best practices discussions
+
+            2. Filesystem Operations:
+            When file operations are requested, I'll format responses as:
+            
+            {{{
+            <details><summary>"<operation_name>"</summary>
+            {
+                "operation": "<operation_name>",
+                "parameters": {
+                    "param1": "value1",
+                    ...
+                }
+            }
+            </details>
+            }}}
+
+            Available Operations:
+            - read_file: {"path": "string"}
+            - read_multiple_files: {"paths": ["string"]}
+            - write_file: {"path": "string", "content": "string"}
+            - create_directory: {"path": "string"}
+            - list_directory: {"path": "string"}
+            - move_file: {"source": "string", "destination": "string"}
+            - search_files: {"path": "string", "pattern": "string"}
+            - get_file_info: {"path": "string"}
+
+            GUIDELINES:
+            1. For filesystem operations:
+            - Always use absolute paths
+            - Verify paths exist before operations
+            - Handle errors gracefully
+            - Provide clear feedback
+
+            2. For code generation:
+            - Follow Rust best practices
+            - Use latest libcosmic features
+            - Implement error handling
+            - Keep code modular and maintainable
+
+            3. For responses:
+            - Provide clear explanations
+            - Include code comments
+            - Explain design decisions
+            - Suggest improvements
+
+            I can assist with:
+            - Analyzing existing code
+            - Writing new code
+            - File system operations
+            - Best practices implementation
+            - Error handling
+            - GUI application development
+            - Code optimization
+
+            Would you like me to:
+            1. Write code directly in chat
+            2. Perform filesystem operations
+            3. Both of the above
+            4. Provide explanations/analysis
+
+            Please specify your needs, and I'll respond accordingly."#;
 
         // First, send the combined prompt to the LLM
         debug!("Sending enhanced prompt to LLM");
-        let enhanced_message = format!("{}{}", system_prompt, message);
+        let enhanced_message = format!(
+            "{}\n\nAvailable Tool Descriptions:\n{}\n\nUser Query: {}",
+            system_prompt, mcp_tool_descriptions, message
+        );
 
         let initial_response = match self.llm.send_message(&enhanced_message).await {
             Ok(response) => response.to_string(),
@@ -227,9 +288,8 @@ impl LLM {
     fn extract_operations(&self, response: &str) -> Vec<Operation> {
         let mut operations = Vec::new();
         let mut start_idx = 0;
-
-        while let Some(start) = response[start_idx..].find("{{{{") {
-            if let Some(end) = response[start_idx + start..].find("}}}}") {
+        while let Some(start) = response[start_idx..].find("{{{") {
+            if let Some(end) = response[start_idx + start..].find("}}}") {
                 let json_str = &response[start_idx + start + 3..start_idx + start + end].trim();
                 debug!("Extracted JSON string: {}", json_str);
 
