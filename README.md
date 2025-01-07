@@ -1,6 +1,41 @@
 # Llming Cosmic
 
-An application for the COSMIC™ desktop
+An LLM-powered application for the COSMIC™ desktop environment
+
+## Features
+
+- Localized UI with Fluent translations
+- Modular LLM backend support
+- Filesystem integration via MCP server
+- HTTP-based API for LLM interactions
+- Configurable UI and LLM settings
+
+## LLM Capabilities
+
+The application provides the following LLM-powered features:
+- Filesystem operations (read files and directories)
+- Code analysis and generation
+- Natural language processing
+- Context-aware assistance
+
+Supported LLM providers:
+- Anthropic
+- Deepseek
+
+## Configuration
+
+The application can be configured via `app_config.toml` with the following sections:
+
+```toml
+[ui]
+# UI configuration options
+
+[mcp_servers]
+# MCP server configurations
+
+[llm]
+# LLM provider and API settings
+```
 
 ## Installation
 
