@@ -1,4 +1,4 @@
-# Llming Cosmic
+# llming cosmic
 
 An LLM-powered application for the COSMIC™ desktop environment
 

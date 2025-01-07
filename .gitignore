@@ -14,3 +14,5 @@ debian/*
 !debian/source
 .env
 ./llming
+.aider*
+.tmp
