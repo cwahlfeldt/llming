@@ -1,10 +1,10 @@
 use anyhow::Result;
 use bytes::Bytes;
-use http_body_util::{BodyExt, Full};
+use http_body_util::Full;
 use hyper::service::service_fn;
-use hyper::{body::Incoming, Method, Request, Response, StatusCode};
+use hyper::{body::Incoming, Request, Response, StatusCode};
 use hyper_util::rt::TokioIo;
-use serde::{de::DeserializeOwned, Serialize};
+use serde::Serialize;
 use std::net::SocketAddr;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info, warn};

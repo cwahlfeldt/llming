@@ -2,21 +2,20 @@
 
 use crate::config::Config;
 use crate::llm::LLM;
-use cosmic::app::{Core, Task};
+use cosmic::app::{Core, Message, Task};
 use cosmic::cosmic_theme;
-use cosmic::cosmic_theme::palette::encoding::srgb;
-use cosmic::cosmic_theme::palette::{rgb, Srgb};
 use cosmic::iced::theme::Palette;
 use cosmic::iced::{Length, Subscription};
 use cosmic::theme;
-use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
-use cosmic::widget::{markdown, Space};
+use cosmic::widget::markdown;
+use cosmic::widget::{button, column, container, row, text, text_input};
 use cosmic::Apply;
 use cosmic::Element;
-use cosmic::Theme;
 use derivative::Derivative;
 use serde::{Deserialize, Serialize};
+use std::env;
 use std::net::SocketAddr;
+use utils::get_home_dir;
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
 pub struct Messages {
@@ -43,7 +42,7 @@ struct ChatMessage {
 }
 
 #[derive(Debug, Clone)]
-pub enum Message {
+pub enum AppMessage {
     InputChanged(String),
     SendMessage,
     UpdateConfig(Config),
@@ -56,7 +55,7 @@ pub enum Message {
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
     type Flags = ();
-    type Message = Message;
+    type Message = AppMessage;
     const APP_ID: &'static str = "com.waffles.llming.app";
 
     fn core(&self) -> &Core {
@@ -67,7 +66,7 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Message>) {
+    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<AppMessage>) {
         let app = AppModel {
             core,
             config: Config::default(),
@@ -78,33 +77,32 @@ impl cosmic::Application for AppModel {
             error: None, // Initialize error state
         };
 
+        let home_dir = get_home_dir();
+
         let init_task = Task::future(async move {
             let addr: SocketAddr = "[::1]:3456".parse().unwrap();
-            let allowed_paths = vec![
-                "/home/waffles".to_string(),
-                "/home/waffles/code".to_string(),
-            ];
+            let allowed_paths = vec![home_dir];
 
             match LLM::new(addr, allowed_paths).await {
-                Ok(llm_fs) => cosmic::app::Message::App(Message::LLMFSInitialized(llm_fs)),
-                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
+                Ok(llm_fs) => Message::App(AppMessage::LLMFSInitialized(llm_fs)),
+                Err(e) => Message::App(AppMessage::Error(e.to_string())),
             }
         });
 
         (app, init_task)
     }
 
-    fn subscription(&self) -> Subscription<Message> {
+    fn subscription(&self) -> Subscription<AppMessage> {
         Subscription::none()
     }
 
-    fn update(&mut self, message: Message) -> Task<Message> {
+    fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
         match message {
-            Message::InputChanged(value) => {
+            AppMessage::InputChanged(value) => {
                 self.input_value = value;
                 Task::none()
             }
-            Message::SendMessage => {
+            AppMessage::SendMessage => {
                 if !self.input_value.trim().is_empty() {
                     let message = ChatMessage {
                         content: self.input_value.to_owned(),
@@ -121,21 +119,23 @@ impl cosmic::Application for AppModel {
 
                         return Task::future(async move {
                             match llm_fs.chat(&input).await {
-                                Ok(response) => {
-                                    cosmic::app::Message::App(Message::ReceivedResponse(response))
+                                Ok(response) => cosmic::app::Message::App(
+                                    AppMessage::ReceivedResponse(response),
+                                ),
+                                Err(e) => {
+                                    cosmic::app::Message::App(AppMessage::Error(e.to_string()))
                                 }
-                                Err(e) => cosmic::app::Message::App(Message::Error(e.to_string())),
                             }
                         });
                     }
                 }
                 Task::none()
             }
-            Message::LLMFSInitialized(llm_fs) => {
+            AppMessage::LLMFSInitialized(llm_fs) => {
                 self.llm_fs = Some(llm_fs);
                 Task::none()
             }
-            Message::ReceivedResponse(response) => {
+            AppMessage::ReceivedResponse(response) => {
                 self.parsed_messages
                     .push(markdown::parse(&response).collect());
 
@@ -145,7 +145,7 @@ impl cosmic::Application for AppModel {
                 });
                 Task::none()
             }
-            Message::Error(error) => {
+            AppMessage::Error(error) => {
                 self.error = Some(error.clone()); // Set error state
                 self.messages.value.push(ChatMessage {
                     content: format!("Error: {}", error),
@@ -153,23 +153,20 @@ impl cosmic::Application for AppModel {
                 });
                 Task::none()
             }
-            Message::UpdateConfig(config) => {
+            AppMessage::UpdateConfig(config) => {
                 self.config = config;
                 Task::none()
             }
-            Message::LinkClicked(url) => {
+            AppMessage::LinkClicked(url) => {
                 println!("Link clicked: {}", url);
                 Task::none()
             }
         }
     }
 
-    fn view(&self) -> Element<Message> {
+    fn view(&self) -> Element<AppMessage> {
         let cosmic_theme::Spacing {
-            space_xxs,
-            space_m,
-            space_l,
-            ..
+            space_xxs, space_m, ..
         } = theme::active().cosmic().spacing;
 
         let messages = column::with_children(
@@ -188,7 +185,7 @@ impl cosmic::Application for AppModel {
                                 markdown::Settings::default(),
                                 markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
                             )
-                            .map(Message::LinkClicked)
+                            .map(AppMessage::LinkClicked)
                         })
                         .unwrap_or_else(|| text::Text::new("Error: Failed to load message").into());
 
@@ -219,14 +216,14 @@ impl cosmic::Application for AppModel {
             .spacing(space_xxs)
             .push(
                 text_input::text_input("Type a message...", &self.input_value)
-                    .on_input(Message::InputChanged)
-                    .on_submit(Message::SendMessage)
+                    .on_input(AppMessage::InputChanged)
+                    .on_submit(AppMessage::SendMessage)
                     // .padding(space_m)
                     .width(Length::Fill),
             )
             .push(
                 button::standard("Send")
-                    .on_press(Message::SendMessage)
+                    .on_press(AppMessage::SendMessage)
                     // .padding(space_m)
                     .width(Length::Fixed(100.0)),
             );

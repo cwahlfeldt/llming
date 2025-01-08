@@ -1,7 +1,7 @@
 use anyhow::Result;
 use bytes::Bytes;
 use http_body_util::{BodyExt, Full};
-use hyper::{Method, Request, Uri};
+use hyper::{Method, Request};
 use hyper_tls::HttpsConnector;
 use hyper_util::{
     client::legacy::{connect::HttpConnector, Client},
@@ -9,7 +9,7 @@ use hyper_util::{
 };
 use serde::{de::DeserializeOwned, Serialize};
 use std::collections::HashMap;
-use tracing::{debug, error, info};
+use tracing::{debug, error};
 
 #[derive(Clone, Debug)]
 pub struct HttpClient {

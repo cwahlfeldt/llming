@@ -2,7 +2,6 @@ use anyhow::Result;
 use bytes::{Buf, Bytes};
 use http_body_util::{BodyExt, Full};
 use hyper::{body::Incoming, Method, Request, Response, StatusCode};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::future::{Future, IntoFuture};
 use std::pin::Pin;
@@ -10,7 +9,7 @@ use std::sync::Arc;
 use tokio::sync::RwLock;
 
 use super::client::{
-    MCPFunction, MCPFunctionCall, MCPFunctionResult, MCPPrompt, MCPServerInfo, MCPTool,
+    MCPFunctionCall, MCPFunctionResult, MCPServerInfo,
 };
 
 type AsyncFunctionHandler = Arc<
@@ -24,7 +23,7 @@ pub struct MCPServer {
     info: MCPServerInfo,
     functions: Arc<RwLock<HashMap<String, AsyncFunctionHandler>>>,
     prompt_renderers: Arc<RwLock<HashMap<String, PromptRenderer>>>,
-    http_server: crate::http::HttpServer,
+    http_server: hyperaxe::HttpServer,
 }
 
 impl std::fmt::Debug for MCPServer {
@@ -42,7 +41,7 @@ impl MCPServer {
             info,
             functions: Arc::new(RwLock::new(HashMap::new())),
             prompt_renderers: Arc::new(RwLock::new(HashMap::new())),
-            http_server: crate::http::HttpServer::new(addr),
+            http_server: hyperaxe::HttpServer::new(addr),
         }
     }
 
@@ -76,7 +75,7 @@ impl MCPServer {
 
     async fn handle_request(&self, req: Request<Incoming>) -> Result<Response<Full<Bytes>>> {
         match (req.method(), req.uri().path()) {
-            (&Method::GET, "/mcp/info") => crate::http::HttpServer::json_response(&self.info).await,
+            (&Method::GET, "/mcp/info") => hyperaxe::HttpServer::json_response(&self.info).await,
 
             (&Method::POST, "/mcp/function") => {
                 let body = req.into_body();
@@ -87,9 +86,9 @@ impl MCPServer {
                 let functions = self.functions.read().await;
                 if let Some(handler) = functions.get(&call.function) {
                     let result = handler(call.parameters).await?;
-                    crate::http::HttpServer::json_response(MCPFunctionResult { result }).await
+                    hyperaxe::HttpServer::json_response(MCPFunctionResult { result }).await
                 } else {
-                    crate::http::HttpServer::error_response(
+                    hyperaxe::HttpServer::error_response(
                         StatusCode::NOT_FOUND,
                         "Function not found",
                     )
@@ -100,9 +99,9 @@ impl MCPServer {
             (&Method::GET, path) if path.starts_with("/mcp/prompt/") => {
                 let prompt_name = path.trim_start_matches("/mcp/prompt/");
                 if let Some(prompt) = self.info.prompts.iter().find(|p| p.name == prompt_name) {
-                    crate::http::HttpServer::json_response(prompt).await
+                    hyperaxe::HttpServer::json_response(prompt).await
                 } else {
-                    crate::http::HttpServer::error_response(
+                    hyperaxe::HttpServer::error_response(
                         StatusCode::NOT_FOUND,
                         "Prompt not found",
                     )
@@ -126,12 +125,12 @@ impl MCPServer {
                 let renderers = self.prompt_renderers.read().await;
                 if let Some(renderer) = renderers.get(&prompt_name) {
                     let rendered = renderer(params)?;
-                    crate::http::HttpServer::json_response(serde_json::json!({
+                    hyperaxe::HttpServer::json_response(serde_json::json!({
                         "rendered": rendered
                     }))
                     .await
                 } else {
-                    crate::http::HttpServer::error_response(
+                    hyperaxe::HttpServer::error_response(
                         StatusCode::NOT_FOUND,
                         "Prompt renderer not found",
                     )
@@ -139,7 +138,7 @@ impl MCPServer {
                 }
             }
 
-            _ => crate::http::HttpServer::error_response(StatusCode::NOT_FOUND, "Not found").await,
+            _ => hyperaxe::HttpServer::error_response(StatusCode::NOT_FOUND, "Not found").await,
         }
     }
 

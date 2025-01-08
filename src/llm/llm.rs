@@ -4,7 +4,6 @@ use std::net::SocketAddr;
 use tokio::time::Duration;
 use tracing::{debug, error, info, warn};
 
-use super::anthropic::AnthropicClient;
 use super::deepseek::DeepSeekClient;
 use crate::{llm::models::model::ModelClient, mcp::*};
 
@@ -296,8 +295,7 @@ impl LLM {
                 let parse_result = serde_json::from_str::<Value>(json_str).or_else(|_| {
                     // If that fails, try some cleanup
                     let cleaned = json_str
-                        .replace('\n', "")
-                        .replace('\r', "")
+                        .replace(['\n', '\r'], "")
                         .trim()
                         .to_string();
                     serde_json::from_str(&cleaned)

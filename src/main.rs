@@ -3,7 +3,7 @@
 mod app;
 mod app_config;
 mod config;
-mod http;
+// mod http;
 mod i18n;
 mod llm;
 mod mcp;

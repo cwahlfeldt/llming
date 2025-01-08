@@ -1,6 +1,3 @@
-use cosmic::cosmic_config::{self, ConfigGet, ConfigSet};
-use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Config {

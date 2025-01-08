@@ -1,7 +1,7 @@
 use super::model::{
-    APIError, Message, ModelClient, ModelRequestOptions, ModelResponse, TextContent,
+    APIError, Message, ModelClient, ModelRequestOptions, TextContent,
 };
-use crate::http::HttpClient;
+use hyperaxe::HttpClient;
 use anyhow::Result;
 use hyper::Method;
 use serde::{Deserialize, Serialize};

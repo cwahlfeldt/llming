@@ -1,5 +1,6 @@
 use super::model::{ModelClient, ModelRequestOptions};
-use crate::http::HttpClient;
+// use hyperaxe::HttpClient;
+use hyperaxe::HttpClient;
 use anyhow::Result;
 use hyper::Method;
 use serde::{Deserialize, Serialize};

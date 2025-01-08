@@ -1,7 +1,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, info};
 
 // MCP Protocol Types
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -63,7 +62,7 @@ pub struct MCPFunctionResult {
 
 #[derive(Clone, Debug)]
 pub struct MCPClient {
-    http_client: crate::http::HttpClient,
+    http_client: hyperaxe::HttpClient,
     server_url: String,
     server_info: Option<MCPServerInfo>,
 }
@@ -72,7 +71,7 @@ impl MCPClient {
     pub fn new(server_url: &str) -> Self {
         info!("Creating new MCP client for server: {}", server_url);
         Self {
-            http_client: crate::http::HttpClient::new()
+            http_client: hyperaxe::HttpClient::new()
                 .with_header("Content-Type", "application/json"),
             server_url: server_url.to_string(),
             server_info: None,
