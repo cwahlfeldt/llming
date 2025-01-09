@@ -1,61 +1,39 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
-use crate::llm::LLM;
-use cosmic::app::{Core, Message, Task};
+use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
-use cosmic::iced::theme::Palette;
 use cosmic::iced::{Length, Subscription};
+use cosmic::iced_runtime::DefaultStyle;
 use cosmic::theme;
-use cosmic::widget::markdown;
-use cosmic::widget::{button, column, container, row, text, text_input};
+use cosmic::widget::{button, card, column, container, icon, row, text, text_input};
 use cosmic::Apply;
 use cosmic::Element;
-use derivative::Derivative;
-use serde::{Deserialize, Serialize};
-use std::env;
-use std::net::SocketAddr;
-use utils::get_home_dir;
 
-#[derive(Debug, Default, Clone, Serialize, Deserialize)]
-pub struct Messages {
-    value: Vec<ChatMessage>,
-}
-
-#[derive(Derivative, Default, Derivative)]
-// #[derivative(Debug)]
 pub struct AppModel {
-    config: Config,
-    error: Option<String>,
-    input_value: String,
-    llm_fs: Option<LLM>,
-    messages: Messages,
-    parsed_messages: Vec<Vec<markdown::Item>>,
-    #[derivative(Debug = "ignore")]
     core: Core,
+    config: Config,
+    messages: Vec<ChatMessage>,
+    input_value: String,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone)]
 struct ChatMessage {
     content: String,
     is_user: bool,
 }
 
 #[derive(Debug, Clone)]
-pub enum AppMessage {
+pub enum Message {
     InputChanged(String),
     SendMessage,
     UpdateConfig(Config),
-    LLMFSInitialized(LLM),
-    ReceivedResponse(String),
-    Error(String),
-    LinkClicked(markdown::Url),
 }
 
 impl cosmic::Application for AppModel {
     type Executor = cosmic::executor::Default;
     type Flags = ();
-    type Message = AppMessage;
+    type Message = Message;
     const APP_ID: &'static str = "com.waffles.llming.app";
 
     fn core(&self) -> &Core {
@@ -66,175 +44,104 @@ impl cosmic::Application for AppModel {
         &mut self.core
     }
 
-    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<AppMessage>) {
+    fn init(core: Core, _flags: Self::Flags) -> (Self, Task<Message>) {
         let app = AppModel {
             core,
             config: Config::default(),
-            messages: Messages::default(),
+            messages: Vec::new(),
             input_value: String::new(),
-            llm_fs: None,
-            parsed_messages: Vec::new(),
-            error: None, // Initialize error state
         };
 
-        let home_dir = get_home_dir();
-
-        let init_task = Task::future(async move {
-            let addr: SocketAddr = "[::1]:3456".parse().unwrap();
-            let allowed_paths = vec![home_dir];
-
-            match LLM::new(addr, allowed_paths).await {
-                Ok(llm_fs) => Message::App(AppMessage::LLMFSInitialized(llm_fs)),
-                Err(e) => Message::App(AppMessage::Error(e.to_string())),
-            }
-        });
-
-        (app, init_task)
+        (app, Task::none())
     }
 
-    fn subscription(&self) -> Subscription<AppMessage> {
+    fn subscription(&self) -> Subscription<Message> {
         Subscription::none()
     }
 
-    fn update(&mut self, message: AppMessage) -> Task<AppMessage> {
+    fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            AppMessage::InputChanged(value) => {
+            Message::InputChanged(value) => {
                 self.input_value = value;
-                Task::none()
             }
-            AppMessage::SendMessage => {
+            Message::SendMessage => {
                 if !self.input_value.trim().is_empty() {
-                    let message = ChatMessage {
-                        content: self.input_value.to_owned(),
+                    self.messages.push(ChatMessage {
+                        content: self.input_value.clone(),
                         is_user: true,
-                    };
-                    self.parsed_messages
-                        .push(markdown::parse(&message.content).collect());
-
-                    self.messages.value.push(message);
-
-                    if let Some(llm_fs) = self.llm_fs.to_owned() {
-                        let input = serde_json::to_string(&self.messages.value).unwrap();
-                        self.input_value.clear();
-
-                        return Task::future(async move {
-                            match llm_fs.chat(&input).await {
-                                Ok(response) => cosmic::app::Message::App(
-                                    AppMessage::ReceivedResponse(response),
-                                ),
-                                Err(e) => {
-                                    cosmic::app::Message::App(AppMessage::Error(e.to_string()))
-                                }
-                            }
-                        });
-                    }
+                    });
+                    // Simple echo response
+                    self.messages.push(ChatMessage {
+                        content: format!("You said: {}", self.input_value),
+                        is_user: false,
+                    });
+                    self.input_value.clear();
                 }
-                Task::none()
             }
-            AppMessage::LLMFSInitialized(llm_fs) => {
-                self.llm_fs = Some(llm_fs);
-                Task::none()
-            }
-            AppMessage::ReceivedResponse(response) => {
-                self.parsed_messages
-                    .push(markdown::parse(&response).collect());
-
-                self.messages.value.push(ChatMessage {
-                    content: response,
-                    is_user: false,
-                });
-                Task::none()
-            }
-            AppMessage::Error(error) => {
-                self.error = Some(error.clone()); // Set error state
-                self.messages.value.push(ChatMessage {
-                    content: format!("Error: {}", error),
-                    is_user: false,
-                });
-                Task::none()
-            }
-            AppMessage::UpdateConfig(config) => {
+            Message::UpdateConfig(config) => {
                 self.config = config;
-                Task::none()
-            }
-            AppMessage::LinkClicked(url) => {
-                println!("Link clicked: {}", url);
-                Task::none()
             }
         }
+        Task::none()
     }
 
-    fn view(&self) -> Element<AppMessage> {
+    fn view(&self) -> Element<Message> {
         let cosmic_theme::Spacing {
-            space_xxs, space_m, ..
+            space_xxs,
+            space_m,
+            space_l,
+            ..
         } = theme::active().cosmic().spacing;
 
-        let messages = column::with_children(
-            self.messages
-                .value
-                .iter()
-                .enumerate()
-                .map(|(index, message)| {
-                    // Add bounds checking
-                    let content = self
-                        .parsed_messages
-                        .get(index)
-                        .map(|parsed| {
-                            markdown::view(
-                                parsed,
-                                markdown::Settings::default(),
-                                markdown::Style::from_palette(Palette::CATPPUCCIN_MOCHA),
-                            )
-                            .map(AppMessage::LinkClicked)
-                        })
-                        .unwrap_or_else(|| text::Text::new("Error: Failed to load message").into());
+        // Build message list
+        let messages = self.messages.iter().fold(
+            column::with_capacity(self.messages.len())
+                .spacing(space_l)
+                .padding(space_m),
+            |column, message| {
+                let message_text = text::body(&message.content);
 
-                    let message_content = container(content).padding(10).width(Length::Fill);
+                let message_container = container::Container::new(message_text);
 
-                    container::Container::new(message_content)
+                column.push(
+                    container::Container::new(message_container)
                         .width(Length::Fill)
                         .align_x(if message.is_user {
-                            cosmic::iced::alignment::Alignment::End
+                            cosmic::iced::alignment::Horizontal::Right
                         } else {
-                            cosmic::iced::alignment::Alignment::Start
-                        })
-                        .into()
-                })
-                .collect(),
-        )
-        .padding(space_m);
-
-        // Add error display if present
-        let mut content = column::with_capacity(3);
-
-        if let Some(error) = &self.error {
-            content = content.push(container(text(error)));
-        }
+                            cosmic::iced::alignment::Horizontal::Left
+                        }),
+                )
+            },
+        );
 
         // Input row with text input and send button
         let input = row::with_capacity(2)
             .spacing(space_xxs)
             .push(
                 text_input::text_input("Type a message...", &self.input_value)
-                    .on_input(AppMessage::InputChanged)
-                    .on_submit(AppMessage::SendMessage)
-                    // .padding(space_m)
+                    .on_input(Message::InputChanged)
+                    .on_submit(Message::SendMessage)
+                    .padding(space_m)
                     .width(Length::Fill),
             )
             .push(
-                button::standard("Send")
-                    .on_press(AppMessage::SendMessage)
-                    // .padding(space_m)
-                    .width(Length::Fixed(100.0)),
+                button::custom("Send")
+                    .class(theme::Button::Text)
+                    .on_press(Message::SendMessage),
             );
 
-        content = content
+        // Main layout
+        let content = column::with_capacity(2)
             .push(cosmic::iced_widget::Scrollable::new(messages).height(Length::Fill))
             .push(
                 container::Container::new(input)
                     .padding(space_m)
                     .width(Length::Fill),
-            );
+            )
+            .spacing(space_xxs)
+            .width(Length::Fill)
+            .height(Length::Fill);
 
         container::Container::new(content)
             .width(Length::Fill)
