@@ -1,13 +1,16 @@
 use crate::protocol::messages::JSONRPCMessage;
 use crate::{Error, Result};
 use async_trait::async_trait;
+use bytes::Bytes;
 use futures::Stream;
-use hyperaxe::client::{Client, ClientBuilder};
-use hyperaxe::http::{HeaderMap, HeaderValue};
+use http::header::{HeaderMap, HeaderValue};
+use http_body_util::Full;
+use hyperax::Client;
 use std::pin::Pin;
 use std::sync::Arc;
 use tokio::sync::RwLock;
 
+#[derive(Clone)]
 pub struct HttpTransport {
     client: Client,
     endpoint: String,
@@ -24,13 +27,24 @@ impl HttpTransport {
 impl super::Transport for HttpTransport {
     async fn send(&self, message: JSONRPCMessage) -> Result<()> {
         let headers = self.headers.read().await.clone();
+        let body = serde_json::to_vec(&message)?;
+
+        let mut req = http::Request::builder().method("POST").uri(&self.endpoint);
+
+        for (key, value) in headers.iter() {
+            req = req.header(key, value);
+        }
+
+        let req = req
+            .header("Content-Type", "application/json")
+            .body(Full::new(Bytes::from(body)))
+            .map_err(|e| Error::Transport(e.to_string().into()))?;
+
         let response = self
             .client
-            .post(&self.endpoint)
-            .headers(headers)
-            .json(&message)?
-            .send()
-            .await?;
+            .request(req)
+            .await
+            .map_err(|e| Error::Transport(e.to_string().into()))?;
 
         if !response.status().is_success() {
             return Err(Error::Transport(
@@ -42,7 +56,6 @@ impl super::Transport for HttpTransport {
     }
 
     async fn receive(&self) -> Result<JSONRPCMessage> {
-        // HTTP transport doesn't support receiving messages directly
         Err(Error::Transport(
             "HTTP transport doesn't support receiving messages directly".into(),
         ))
@@ -57,7 +70,6 @@ impl super::Transport for HttpTransport {
 pub struct HttpTransportBuilder {
     endpoint: Option<String>,
     headers: HeaderMap,
-    client_config: Option<ClientBuilder>,
 }
 
 impl HttpTransportBuilder {
@@ -66,17 +78,12 @@ impl HttpTransportBuilder {
         self
     }
 
-    pub fn header(mut self, key: &str, value: &str) -> Result<Self> {
+    pub fn header(mut self, key: impl Into<&'static str>, value: &str) -> Result<Self> {
         self.headers.insert(
-            key,
-            HeaderValue::from_str(value).map_err(|e| Error::Transport(e.into()))?,
+            key.into(),
+            HeaderValue::from_str(value).map_err(|e| Error::Transport(e.to_string().into()))?,
         );
         Ok(self)
-    }
-
-    pub fn client_config(mut self, config: ClientBuilder) -> Self {
-        self.client_config = Some(config);
-        self
     }
 
     pub fn build(self) -> Result<HttpTransport> {
@@ -84,10 +91,8 @@ impl HttpTransportBuilder {
             .endpoint
             .ok_or_else(|| Error::Transport("HTTP transport requires an endpoint".into()))?;
 
-        let client = self.client_config.unwrap_or_default().build()?;
-
         Ok(HttpTransport {
-            client,
+            client: Client::new(),
             endpoint,
             headers: Arc::new(RwLock::new(self.headers)),
         })

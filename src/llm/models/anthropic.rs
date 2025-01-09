@@ -1,9 +1,7 @@
-use super::model::{
-    APIError, Message, ModelClient, ModelRequestOptions, TextContent,
-};
-use hyperaxe::HttpClient;
+use super::model::{APIError, Message, ModelClient, ModelRequestOptions, TextContent};
 use anyhow::Result;
 use hyper::Method;
+use hyperax::HttpClient;
 use serde::{Deserialize, Serialize};
 use std::env;
 use tracing::{debug, error, info};

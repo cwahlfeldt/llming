@@ -1,15 +1,15 @@
 use super::model::{ModelClient, ModelRequestOptions};
 // use hyperaxe::HttpClient;
-use hyperaxe::HttpClient;
 use anyhow::Result;
 use hyper::Method;
+use hyperax::Client;
 use serde::{Deserialize, Serialize};
 use std::env;
 use tracing::{debug, error, info};
 
 #[derive(Clone, Default, Debug)]
 pub struct DeepSeekClient {
-    client: HttpClient,
+    client: Client,
     api_key: String,
 }
 
@@ -49,7 +49,7 @@ impl DeepSeekClient {
         let api_key = env::var("DEEPSEEK_API_KEY").expect("DEEPSEEK_API_KEY must be set");
         info!("Initializing DeepSeek client");
 
-        let client = HttpClient::new()
+        let client = Client::new()
             .with_header("Authorization", &format!("Bearer {}", api_key))
             .with_header("Content-Type", "application/json");
 

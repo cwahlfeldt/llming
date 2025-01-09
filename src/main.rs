@@ -6,7 +6,7 @@ mod config;
 // mod http;
 mod i18n;
 mod llm;
-mod mcp;
+// mod mcp;
 
 fn main() -> cosmic::iced::Result {
     dotenv::dotenv().ok();
