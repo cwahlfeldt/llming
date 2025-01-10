@@ -1,14 +1,11 @@
-use std::collections::HashMap;
 use async_trait::async_trait;
+use mcp_schema::{CallToolResult, ListToolsResult, ServerResult, Tool};
 use serde_json::Value;
-use mcp_schema::{
-    Tool, ServerResult,
-    ListToolsResult, CallToolResult,
-};
+use std::collections::HashMap;
 
-use crate::{Result, Error};
-use crate::handler::RequestHandler;
 use super::{HandlerState, SharedState};
+use crate::handler::RequestHandler;
+use crate::{Error, Result};
 
 /// State for the tools handler
 #[derive(Default)]
@@ -20,8 +17,15 @@ pub(crate) struct ToolState {
 impl HandlerState for ToolState {}
 
 /// Handler for tool-related requests
+#[derive(Clone)]
 pub struct ToolHandler {
     state: SharedState<ToolState>,
+}
+
+impl Default for ToolHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ToolHandler {
@@ -33,7 +37,10 @@ impl ToolHandler {
 
     /// Register a tool that can be called by clients
     pub fn register_tool(&self, tool: Tool) -> Result<()> {
-        let mut state = self.state.write().map_err(|_| Error::Internal("state lock poisoned".into()))?;
+        let mut state = self
+            .state
+            .write()
+            .map_err(|_| Error::Internal("state lock poisoned".into()))?;
         state.tools.insert(tool.name.clone(), tool);
         Ok(())
     }
@@ -42,13 +49,17 @@ impl ToolHandler {
 #[async_trait]
 impl RequestHandler for ToolHandler {
     async fn handle(&self, params: Value) -> Result<ServerResult> {
-        let method = params.get("method")
+        let method = params
+            .get("method")
             .and_then(|v| v.as_str())
             .ok_or_else(|| Error::InvalidParams("missing method".into()))?;
 
         match method {
             "tools/list" => {
-                let state = self.state.read().map_err(|_| Error::Internal("state lock poisoned".into()))?;
+                let state = self
+                    .state
+                    .read()
+                    .map_err(|_| Error::Internal("state lock poisoned".into()))?;
                 let tools = state.tools.values().cloned().collect();
                 Ok(ServerResult::ListTools(ListToolsResult {
                     meta: None,
@@ -58,13 +69,19 @@ impl RequestHandler for ToolHandler {
                 }))
             }
             "tools/call" => {
-                let name = params.get("name")
+                let name = params
+                    .get("name")
                     .and_then(|v| v.as_str())
                     .ok_or_else(|| Error::InvalidParams("missing tool name".into()))?;
 
-                let state = self.state.read().map_err(|_| Error::Internal("state lock poisoned".into()))?;
-                
-                let tool = state.tools.get(name)
+                let state = self
+                    .state
+                    .read()
+                    .map_err(|_| Error::Internal("state lock poisoned".into()))?;
+
+                let tool = state
+                    .tools
+                    .get(name)
                     .ok_or_else(|| Error::InvalidRequest(format!("tool not found: {}", name)))?;
 
                 // Here we'd actually execute the tool
@@ -104,9 +121,12 @@ mod tests {
         let handler = ToolHandler::new();
         handler.register_tool(test_tool()).unwrap();
 
-        let result = handler.handle(json!({
-            "method": "tools/list",
-        })).await.unwrap();
+        let result = handler
+            .handle(json!({
+                "method": "tools/list",
+            }))
+            .await
+            .unwrap();
 
         match result {
             ServerResult::ListTools(result) => {

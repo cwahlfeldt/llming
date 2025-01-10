@@ -17,6 +17,7 @@ struct LogState {
 }
 
 /// Handler for logging-related requests
+#[derive(Clone)]
 pub struct LoggingHandler {
     state: Arc<RwLock<LogState>>,
 }
@@ -67,15 +68,13 @@ impl LoggingHandler {
         let notification = JSONRPCNotification {
             json_rpc: JSONRPC_VERSION.to_string(),
             method: "notifications/message".to_string(),
-            params: Value::from(
-                serde_json::to_value(LoggingMessageParams {
+            params: serde_json::to_value(LoggingMessageParams {
                     level,
                     logger,
                     data,
                     extra: Default::default(),
                 })
                 .unwrap(),
-            ),
         };
 
         (state.notify)(notification);

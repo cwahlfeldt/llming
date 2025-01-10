@@ -1,5 +1,5 @@
 use bytes::{Buf, Bytes};
-use http::{Request, Response, HeaderMap, Version};
+use hyper::{Request, Response, Version};
 use std::io::{self, Cursor};
 
 pub struct Parser {
@@ -16,9 +16,10 @@ impl Parser {
     pub fn parse_request(&mut self) -> io::Result<Request<()>> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut req = httparse::Request::new(&mut headers);
-        
-        let status = req.parse(self.buf.chunk())?;
-        
+
+        let chunk = self.buf.chunk().to_vec();
+        let status = req.parse(&chunk).unwrap();
+
         if !status.is_complete() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -34,8 +35,11 @@ impl Parser {
         if let Some(headers) = builder.headers_mut() {
             for h in req.headers {
                 headers.insert(
-                    h.name.parse().unwrap(),
-                    h.value.to_owned().into(),
+                    h.name.parse::<hyper::header::HeaderName>().unwrap(),
+                    String::from_utf8_lossy(h.value)
+                        .into_owned()
+                        .try_into()
+                        .unwrap(),
                 );
             }
         }
@@ -46,9 +50,10 @@ impl Parser {
     pub fn parse_response(&mut self) -> io::Result<Response<()>> {
         let mut headers = [httparse::EMPTY_HEADER; 64];
         let mut res = httparse::Response::new(&mut headers);
-        
-        let status = res.parse(self.buf.chunk())?;
-        
+
+        let chunk = self.buf.chunk().to_vec();
+        let status = res.parse(&chunk).unwrap();
+
         if !status.is_complete() {
             return Err(io::Error::new(
                 io::ErrorKind::WouldBlock,
@@ -63,8 +68,11 @@ impl Parser {
         if let Some(headers) = builder.headers_mut() {
             for h in res.headers {
                 headers.insert(
-                    h.name.parse().unwrap(),
-                    h.value.to_owned().into(),
+                    h.name.parse::<hyper::header::HeaderName>().unwrap(),
+                    String::from_utf8_lossy(h.value)
+                        .into_owned()
+                        .try_into()
+                        .unwrap(),
                 );
             }
         }

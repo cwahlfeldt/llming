@@ -1,11 +1,10 @@
-use std::collections::HashMap;
 use mcp_schema::{
-    ServerCapabilities, Implementation,
-    ResourcesCapability, ToolsCapability, PromptsCapability,
-    Resource, Tool, Prompt,
+    Implementation, Prompt, PromptsCapability, Resource, ResourcesCapability, ServerCapabilities,
+    Tool, ToolsCapability,
 };
+use std::collections::HashMap;
 
-use crate::{Server, Result, Error};
+use crate::{Error, Result, Server};
 
 /// Builder pattern for configuring and creating an MCP server.
 pub struct ServerBuilder {
@@ -83,7 +82,10 @@ impl ServerBuilder {
     }
 
     /// Add experimental capabilities.
-    pub fn with_experimental(mut self, experimental: impl Into<HashMap<String, serde_json::Value>>) -> Self {
+    pub fn with_experimental(
+        mut self,
+        experimental: impl Into<HashMap<String, serde_json::Value>>,
+    ) -> Self {
         self.capabilities.experimental = Some(experimental.into());
         self
     }
@@ -104,7 +106,9 @@ impl ServerBuilder {
                 handler.register_resource(resource)?;
             }
         } else if !self.resources.is_empty() {
-            return Err(Error::InvalidRequest("resources support not enabled".into()));
+            return Err(Error::InvalidRequest(
+                "resources support not enabled".into(),
+            ));
         }
 
         // Register any provided tools
@@ -132,7 +136,6 @@ impl ServerBuilder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mcp_schema::TextContent;
 
     #[test]
     fn test_builder_basic() {

@@ -17,6 +17,8 @@ pub enum Error {
     Request(#[from] hyper::http::Error),
     #[error("Connect error: {0}")]
     Connect(#[from] std::io::Error),
+    #[error("{0}")]
+    Mock(String),
 }
 
 struct HttpConnector {
@@ -63,7 +65,7 @@ pub struct Client {
 }
 #[cfg(test)]
 thread_local! {
-    static MOCK_RESPONSE: std::cell::RefCell<Option<Response>> = std::cell::RefCell::new(None);
+    static MOCK_RESPONSE: std::cell::RefCell<Option<Response<Bytes>>> = std::cell::RefCell::new(None);
 }
 
 impl Client {
@@ -76,7 +78,7 @@ impl Client {
     }
 
     #[cfg(test)]
-    pub fn mock_response(response: Response) {
+    pub fn mock_response(response: Response<Bytes>) {
         MOCK_RESPONSE.with(|r| *r.borrow_mut() = Some(response));
     }
 
@@ -93,9 +95,10 @@ impl Client {
             return MOCK_RESPONSE.with(|r| {
                 r.borrow()
                     .clone()
-                    .ok_or_else(|| Error::Http("No mock response set".to_string()))
+                    .ok_or_else(|| Error::Mock("No mock response set".to_string()))
             });
         }
+
         #[cfg(not(test))]
         {
             if let Some(base) = &self.base_url {
@@ -223,5 +226,60 @@ impl ClientBuilder {
             base_url: self.base_url,
             headers: self.headers,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use bytes::Bytes;
+    use http::Response;
+    use std::convert::Infallible;
+
+    #[tokio::test]
+    async fn test_client_methods() {
+        let client = Client::new();
+
+        // Mock response for testing
+        let mock_response = Response::builder()
+            .status(200)
+            .body(Bytes::from("OK"))
+            .unwrap();
+
+        Client::mock_response(mock_response);
+
+        // Test GET
+        let response = client.get("http://test.com").await.unwrap();
+        assert_eq!(response.status(), 200);
+        assert_eq!(response.body(), &Bytes::from("OK"));
+
+        // Test POST
+        let response = client
+            .post("http://test.com", Full::new(Bytes::from("test")))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), 200);
+
+        // Test headers
+        let client = Client::builder()
+            .header("X-Test", "value")
+            .base_url("http://test.com")
+            .build();
+
+        let response = client.get("/path").await.unwrap();
+        assert_eq!(response.status(), 200);
+    }
+
+    #[tokio::test]
+    async fn test_client_builder() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(30))
+            .base_url("http://test.com")
+            .header("User-Agent", "test")
+            .build();
+
+        assert!(client.timeout.is_some());
+        assert_eq!(client.base_url.as_deref(), Some("http://test.com"));
+        assert!(client.headers.contains_key("user-agent"));
     }
 }

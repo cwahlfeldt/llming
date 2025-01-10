@@ -1,3 +1,5 @@
+mod parser;
+
 use http_body_util::Full;
 use hyper::body::Bytes;
 

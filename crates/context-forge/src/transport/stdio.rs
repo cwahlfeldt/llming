@@ -1,4 +1,4 @@
-use std::io::{self, BufRead, Write};
+use std::io::{BufRead, Write};
 use std::future::Future;
 use async_trait::async_trait;
 use serde_json::Value;
@@ -15,6 +15,12 @@ use super::{Transport, Message};
 pub struct StdioTransport {
     reader: BufReader<tokio::io::Stdin>,
     writer: tokio::io::Stdout,
+}
+
+impl Default for StdioTransport {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl StdioTransport {

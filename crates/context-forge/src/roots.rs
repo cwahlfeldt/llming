@@ -13,6 +13,7 @@ pub(crate) struct RootState {
 }
 
 /// Handler for root-related requests
+#[derive(Clone)]
 pub struct RootHandler {
     state: Arc<RwLock<RootState>>,
     notify: Option<Arc<Box<dyn Fn(JSONRPCNotification<Value>) + Send + Sync>>>,

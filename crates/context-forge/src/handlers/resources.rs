@@ -21,8 +21,15 @@ pub(crate) struct ResourceState {
 impl HandlerState for ResourceState {}
 
 /// Handler for resource-related requests
+#[derive(Clone)]
 pub struct ResourceHandler {
     state: SharedState<ResourceState>,
+}
+
+impl Default for ResourceHandler {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl ResourceHandler {

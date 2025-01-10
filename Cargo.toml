@@ -6,6 +6,9 @@ license = "MPL-2.0"
 description = "An application for the COSMIC™ desktop"
 repository = "https://github.com/cwahlfeldt/llming"
 
+[workspace]
+members = ["crates/*"]
+
 [build-dependencies]
 vergen = { version = "8", features = ["git", "gitcl"] }
 
@@ -18,9 +21,7 @@ tokio = { version = "1.41.0", features = ["full"] }
 dotenv = "0.15.0"
 hyperax = { path = "crates/hyperax" }
 utils = { path = "crates/utils" }
-mcp = { path = "crates/mcp" }
 assistant = { path = "crates/assistant" }
-# filesystem = { path = "crates/filesystem" }
 context-forge = { path = "crates/context-forge" }
 
 [dependencies.i18n-embed]

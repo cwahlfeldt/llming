@@ -1,12 +1,16 @@
 use mcp_schema::{JSONRPCNotification, ProgressNotificationParams, ProgressToken, JSONRPC_VERSION};
+use serde::Serialize;
 use serde_json::Value;
 use std::sync::{Arc, Mutex};
 
-/// A progress tracker for long-running operations.
+/// A progress tracker for long-running operations.]
+#[derive(Serialize)]
 pub struct ProgressTracker {
     token: ProgressToken,
+    #[serde(skip)]
     progress: Arc<Mutex<f64>>,
     total: Option<f64>,
+    #[serde(skip)]
     notify: Box<dyn Fn(JSONRPCNotification<Value>) + Send + Sync>,
 }
 
@@ -34,15 +38,13 @@ impl ProgressTracker {
         let notification = JSONRPCNotification {
             json_rpc: JSONRPC_VERSION.to_string(),
             method: "notifications/progress".to_string(),
-            params: Value::from(
-                serde_json::to_value(ProgressNotificationParams {
+            params: serde_json::to_value(ProgressNotificationParams {
                     progress_token: self.token.clone(),
                     progress,
                     total: self.total,
                     extra: Default::default(),
                 })
                 .unwrap(),
-            ),
         };
 
         // Send notification through callback
