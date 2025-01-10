@@ -20,7 +20,8 @@ hyperax = { path = "crates/hyperax" }
 utils = { path = "crates/utils" }
 mcp = { path = "crates/mcp" }
 assistant = { path = "crates/assistant" }
-filesystem = { path = "crates/filesystem" }
+# filesystem = { path = "crates/filesystem" }
+context-forge = { path = "crates/context-forge" }
 
 [dependencies.i18n-embed]
 version = "0.15"

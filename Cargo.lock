@@ -823,7 +823,6 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
- "serde",
  "wasm-bindgen",
  "windows-targets 0.52.6",
 ]
@@ -980,6 +979,19 @@ dependencies = [
  "getrandom",
  "once_cell",
  "tiny-keccak",
+]
+
+[[package]]
+name = "context-forge"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "mcp-schema",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -1632,24 +1644,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1e6853b52649d4ac5c0bd02320cddc5ba956bdb407c4b75a2c6b75bf51500f8c"
 dependencies = [
  "simd-adler32",
-]
-
-[[package]]
-name = "filesystem"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "futures",
- "hyperax",
- "mcp",
- "serde",
- "serde_json",
- "similar",
- "thiserror",
- "tokio",
- "tokio-stream",
- "tracing",
 ]
 
 [[package]]
@@ -3162,8 +3156,8 @@ name = "llming"
 version = "0.1.0"
 dependencies = [
  "assistant",
+ "context-forge",
  "dotenv",
- "filesystem",
  "futures-util",
  "hyperax",
  "i18n-embed",
@@ -3290,6 +3284,14 @@ dependencies = [
  "thiserror",
  "tokio",
  "uuid",
+]
+
+[[package]]
+name = "mcp-schema"
+version = "0.1.2"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -4733,12 +4735,6 @@ name = "simd-adler32"
 version = "0.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d66dc143e6b11c1eddc06d5c423cfc97062865baf299914ab64caa38182078fe"
-
-[[package]]
-name = "similar"
-version = "2.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1de1d4f81173b03af4c0cbed3c898f6bff5b870e4a7f5d6f4057d62a7a4b686e"
 
 [[package]]
 name = "simplecss"
