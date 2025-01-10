@@ -10,7 +10,7 @@ use crate::handler::RequestHandler;
 use crate::{Error, Result};
 
 /// State for the logging system
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 struct LogState {
     level: LoggingLevel,
     notify: Arc<Box<dyn Fn(JSONRPCNotification<Value>) + Send + Sync>>,

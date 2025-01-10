@@ -1,10 +1,10 @@
 pub mod stdio;
 
-use std::future::Future;
-use serde_json::Value;
-use mcp_schema::{JSONRPCRequest, JSONRPCResponse, JSONRPCNotification};
-use async_trait::async_trait;
 use crate::Result;
+use async_trait::async_trait;
+use mcp_schema::{JSONRPCNotification, JSONRPCRequest, JSONRPCResponse};
+use serde_json::Value;
+use std::future::Future;
 
 /// A trait for transports that can be used to communicate with MCP clients.
 #[async_trait]
@@ -25,7 +25,7 @@ pub trait Transport: Send + Sync {
 }
 
 /// Represents a message that can be sent or received over a transport.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub enum Message {
     /// A request from the client that expects a response.
     Request(JSONRPCRequest<Value>),

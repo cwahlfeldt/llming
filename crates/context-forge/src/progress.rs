@@ -1,12 +1,8 @@
-use std::sync::{Arc, Mutex};
-use mcp_schema::{
-    ProgressToken, JSONRPCNotification,
-    ProgressNotificationParams, JSONRPC_VERSION,
-};
+use mcp_schema::{JSONRPCNotification, ProgressNotificationParams, ProgressToken, JSONRPC_VERSION};
 use serde_json::Value;
+use std::sync::{Arc, Mutex};
 
 /// A progress tracker for long-running operations.
-#[derive(Clone)]
 pub struct ProgressTracker {
     token: ProgressToken,
     progress: Arc<Mutex<f64>>,
@@ -38,12 +34,15 @@ impl ProgressTracker {
         let notification = JSONRPCNotification {
             json_rpc: JSONRPC_VERSION.to_string(),
             method: "notifications/progress".to_string(),
-            params: Value::from(serde_json::to_value(ProgressNotificationParams {
-                progress_token: self.token.clone(),
-                progress,
-                total: self.total,
-                extra: Default::default(),
-            }).unwrap()),
+            params: Value::from(
+                serde_json::to_value(ProgressNotificationParams {
+                    progress_token: self.token.clone(),
+                    progress,
+                    total: self.total,
+                    extra: Default::default(),
+                })
+                .unwrap(),
+            ),
         };
 
         // Send notification through callback
@@ -63,7 +62,8 @@ impl ProgressTracker {
 
 /// Helper function to check if a request includes a progress token
 pub fn get_progress_token(params: &Value) -> Option<ProgressToken> {
-    params.get("_meta")?
+    params
+        .get("_meta")?
         .as_object()?
         .get("progressToken")
         .and_then(|t| serde_json::from_value(t.clone()).ok())
@@ -79,11 +79,9 @@ mod tests {
         let notifications = Arc::new(Mutex::new(Vec::new()));
         let notif_clone = notifications.clone();
 
-        let tracker = ProgressTracker::new(
-            ProgressToken::Number(1),
-            Some(100.0),
-            move |n| notif_clone.lock().unwrap().push(n)
-        );
+        let tracker = ProgressTracker::new(ProgressToken::Number(1), Some(100.0), move |n| {
+            notif_clone.lock().unwrap().push(n)
+        });
 
         // Test progress updates
         tracker.update(25.0);
@@ -109,7 +107,7 @@ mod tests {
                 "progressToken": 123
             }
         });
-        
+
         let token = get_progress_token(&params);
         assert!(matches!(token, Some(ProgressToken::Number(123))));
 
