@@ -1,0 +1,11 @@
+[package]
+name = "conduit"
+version = "0.1.0"
+edition = "2021"
+description = "A simple wrapper around mesh for Anthropic API integration"
+authors = ["default_user"]
+
+[dependencies]
+mesh = "0.1"
+tokio = { version = "1.0", features = ["full"] }
+futures-util = "0.3"

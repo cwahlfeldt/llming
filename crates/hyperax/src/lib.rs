@@ -1,15 +1,17 @@
 pub mod client;
 pub mod common;
 pub mod server;
+mod export;
 
 pub use client::{Client, Error};
 pub use server::Server;
+pub use export::*;
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use bytes::Bytes;
-    use http::Response;
+    use hyper::Response;
 
     #[tokio::test]
     async fn test_client_mock() {

@@ -22,3 +22,7 @@ httparse = "1.9"
 [dev-dependencies]
 tokio-test = "0.4"
 http = "1.0"
+
+# [[bin]]
+# name = "llming"
+# path = "./src/server.rs"

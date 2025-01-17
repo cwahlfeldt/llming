@@ -100,6 +100,25 @@ where
     }
 }
 
+// async fn main() {
+//     let mut server = Server::new(SocketAddr::from(([127, 0, 0, 1], 8080)));
+//     let (tx, rx) = watch::channel(false);
+//     server
+//         .run(
+//             |_req| async {
+//                 Ok::<_, Infallible>(
+//                     Response::builder()
+//                         .status(200)
+//                         .body(Full::new(Bytes::from("Hello World")))
+//                         .unwrap(),
+//                 )
+//             },
+//             rx,
+//         )
+//         .await
+//         .unwrap();
+// }
+
 #[cfg(test)]
 mod tests {
     use super::*;
