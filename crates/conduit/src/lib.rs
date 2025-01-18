@@ -125,7 +125,10 @@ impl Conduit {
             request.stream = true;
             request.messages = vec![message];
 
-            eprintln!("Conduit - Sending stream request with prompt: {:?}", request);
+            eprintln!(
+                "Conduit - Sending stream request with prompt: {:?}",
+                request
+            );
 
             // Send the streaming request
             eprintln!("Conduit - About to send request to API");
@@ -144,8 +147,10 @@ impl Conduit {
             impl<S: Stream + Unpin> Stream for TrackedStream<S> {
                 type Item = S::Item;
 
-                fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-                    eprintln!("Conduit - Polling stream");
+                fn poll_next(
+                    mut self: Pin<&mut Self>,
+                    cx: &mut Context<'_>,
+                ) -> Poll<Option<Self::Item>> {
                     match self.inner.poll_next_unpin(cx) {
                         Poll::Ready(Some(item)) => {
                             eprintln!("Conduit - Got stream item");

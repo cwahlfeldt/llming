@@ -89,90 +89,107 @@ impl cosmic::Application for AppModel {
         match &self.stream_state {
             StreamState::Streaming => {
                 if let Some(conduit) = &self.conduit {
-                    // Use the last user message as the prompt
-                    let prompt = self
-                        .messages
-                        .iter()
-                        .rev()
-                        .find(|msg| msg.is_user)
-                        .map(|msg| msg.content.clone())
-                        .unwrap_or_default();
+                    // Only use the last user message
+                    if let Some(last_user_msg) = self.messages.iter().rev().find(|msg| msg.is_user)
+                    {
+                        let prompt = last_user_msg.content.clone();
+                        eprintln!("Creating subscription for message: '{}'", prompt);
 
-                    if prompt.is_empty() {
-                        return Subscription::none();
-                    }
-
-                    eprintln!("Starting subscription with prompt: '{}'", prompt);
-
-                    struct StreamSubscription {
-                        conduit: Arc<Conduit>,
-                        prompt: String,
-                    }
-
-                    impl Recipe for StreamSubscription {
-                        type Output = Message;
-
-                        fn hash(
-                            &self,
-                            state: &mut cosmic::iced::advanced::graphics::futures::subscription::Hasher,
-                        ) {
-                            self.prompt.hash(state);
+                        struct StreamSubscription {
+                            conduit: Arc<Conduit>,
+                            prompt: String,
                         }
 
-                        fn stream(
-                            self: Box<Self>,
-                            _input: Pin<Box<dyn Stream<Item = IcedEvent> + Send>>,
-                        ) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
-                            Box::pin(async_stream::stream! {
-                                yield Message::StreamStarted;
+                        impl Recipe for StreamSubscription {
+                            type Output = Message;
 
-                                eprintln!("Debug - Sending prompt: '{}'", self.prompt);
-                                eprintln!("App - Creating stream request for prompt: {}", self.prompt);
-                                match self.conduit.stream_message(&self.prompt, ClaudeModel::Claude35Sonnet, 1024).await {
-                                    Ok(stream) => {
-                                        eprintln!("App - Stream created successfully");
-                                        let mut pinned = Box::pin(stream);
+                            fn hash(
+                                &self,
+                                state: &mut cosmic::iced::advanced::graphics::futures::subscription::Hasher,
+                            ) {
+                                use std::hash::Hash;
+                                // Include timestamp in hash to ensure unique subscriptions
+                                (
+                                    self.prompt.clone(),
+                                    std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default()
+                                        .as_secs(),
+                                )
+                                    .hash(state);
+                            }
 
-                                        yield Message::StreamStarted;
+                            fn stream(
+                                self: Box<Self>,
+                                _input: Pin<Box<dyn Stream<Item = IcedEvent> + Send>>,
+                            ) -> Pin<Box<dyn Stream<Item = Message> + Send>>
+                            {
+                                Box::pin(async_stream::stream! {
+                                    eprintln!("Starting stream for message: '{}'", self.prompt);
+                                    match self.conduit.stream_message(&self.prompt, ClaudeModel::Claude35Sonnet, 1024).await {
+                                        Ok(stream) => {
+                                            let mut pinned = Box::pin(stream);
+                                            let mut content_started = false;
 
-                                        while let Some(event) = pinned.next().await {
-                                            eprintln!("App - Got stream event");
-                                            match event {
-                                                Ok(StreamEvent::ContentBlockDelta(content)) => {
-                                                    eprintln!("App - Content: {}", content.delta.text);
-                                                    yield Message::StreamUpdate(content.delta.text);
-                                                }
-                                                Ok(StreamEvent::MessageStop) => {
-                                                    eprintln!("App - Stream complete");
-                                                    yield Message::StreamCompleted;
-                                                    break;
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("App - Stream error: {}", e);
-                                                    yield Message::StreamError(e.to_string());
-                                                    break;
-                                                }
-                                                _ => {
-                                                    eprintln!("App - Other event type");
+                                            yield Message::StreamStarted;
+
+                                            while let Some(event) = pinned.next().await {
+                                                match event {
+                                                    Ok(StreamEvent::ContentBlockDelta(content)) => {
+                                                        if !content.delta.text.is_empty() {
+                                                            content_started = true;
+                                                            eprintln!("Got content: {}", content.delta.text);
+                                                            yield Message::StreamUpdate(content.delta.text);
+                                                        }
+                                                    }
+                                                    Ok(StreamEvent::MessageStop) => {
+                                                        eprintln!("Stream complete");
+                                                        if content_started {
+                                                            yield Message::StreamCompleted;
+                                                        } else {
+                                                            // If no content was received, treat as an error
+                                                            yield Message::StreamError("No content received".to_string());
+                                                        }
+                                                        break;
+                                                    }
+                                                    Ok(StreamEvent::MessageStart { .. }) => {
+                                                        eprintln!("Message start received");
+                                                    }
+                                                    Ok(StreamEvent::ContentBlockStart(_)) => {
+                                                        eprintln!("Content block start received");
+                                                    }
+                                                    Ok(StreamEvent::ContentBlockStop(_)) => {
+                                                        eprintln!("Content block stop received");
+                                                    }
+                                                    Ok(_) => {
+                                                        eprintln!("Other event type received");
+                                                    }
+                                                    Err(e) => {
+                                                        eprintln!("Stream error: {}", e);
+                                                        yield Message::StreamError(e.to_string());
+                                                        break;
+                                                    }
                                                 }
                                             }
                                         }
-                                        eprintln!("App - Stream ended");
+                                        Err(e) => {
+                                            eprintln!("Failed to create stream: {}", e);
+                                            yield Message::StreamError(e.to_string());
+                                        }
                                     }
-                                    Err(e) => {
-                                        yield Message::StreamError(e.to_string());
-                                    }
-                                }
-                            })
+                                })
+                            }
                         }
-                    }
 
-                    cosmic::iced::advanced::graphics::futures::subscription::from_recipe(
-                        StreamSubscription {
-                            conduit: Arc::clone(conduit),
-                            prompt,
-                        },
-                    )
+                        cosmic::iced::advanced::graphics::futures::subscription::from_recipe(
+                            StreamSubscription {
+                                conduit: Arc::clone(conduit),
+                                prompt,
+                            },
+                        )
+                    } else {
+                        Subscription::none()
+                    }
                 } else {
                     Subscription::none()
                 }
@@ -190,10 +207,13 @@ impl cosmic::Application for AppModel {
                 let prompt = self.input_value.trim();
                 if prompt.is_empty() {
                     self.stream_state = StreamState::Error("Cannot send empty message".to_string());
-                } else if self.conduit.is_some() {
+                } else if self.conduit.is_some() && matches!(self.stream_state, StreamState::Idle) {
+                    // Only allow sending if we're in Idle state
+                    eprintln!("Sending message: {}", prompt);
+
                     // Add user message
                     self.messages.push(ChatMessage {
-                        content: self.input_value.clone(),
+                        content: prompt.to_string(),
                         is_user: true,
                         is_streaming: false,
                     });
@@ -205,37 +225,28 @@ impl cosmic::Application for AppModel {
                         is_streaming: true,
                     });
 
-                    // Set streaming state and clear input immediately
+                    // Set streaming state and clear input
                     self.stream_state = StreamState::Streaming;
                     self.input_value.clear();
-                } else {
-                    self.stream_state =
-                        StreamState::Error("API connection not available".to_string());
                 }
             }
 
             Message::StreamStarted => {
-                eprintln!("Debug - Stream started message received");
                 if let Some(last) = self.messages.last_mut() {
                     if !last.is_user {
                         last.is_streaming = true;
-                        last.content.clear(); // Ensure we start with empty content
                     }
                 }
             }
             Message::StreamUpdate(content) => {
-                eprintln!("Debug - Stream update received: {}", content);
                 if let Some(last) = self.messages.last_mut() {
                     if !last.is_user && last.is_streaming {
                         last.content.push_str(&content);
-                        // Force a redraw by cloning the message
-                        let updated_message = last.clone();
-                        *last = updated_message;
                     }
                 }
             }
             Message::StreamCompleted => {
-                // Stream completed
+                eprintln!("Stream completed, resetting state");
                 if let Some(last) = self.messages.last_mut() {
                     if !last.is_user {
                         last.is_streaming = false;
@@ -243,10 +254,16 @@ impl cosmic::Application for AppModel {
                 }
                 self.stream_state = StreamState::Idle;
             }
+
             Message::StreamError(error) => {
-                // Handle stream error
                 eprintln!("Stream error: {}", error);
-                self.stream_state = StreamState::Error(error);
+                if let Some(last) = self.messages.last_mut() {
+                    if !last.is_user {
+                        last.is_streaming = false;
+                        last.content = format!("[Error: {}]", error);
+                    }
+                }
+                self.stream_state = StreamState::Idle;
             }
             Message::UpdateConfig(config) => {
                 self.config = config;
@@ -303,6 +320,15 @@ impl cosmic::Application for AppModel {
             },
         );
 
+        // Disable the send button while streaming
+        let send_button = if matches!(self.stream_state, StreamState::Streaming) {
+            button::custom("Send").class(theme::Button::Text)
+        } else {
+            button::custom("Send")
+                .class(theme::Button::Text)
+                .on_press(Message::SendMessage)
+        };
+
         // Input row with text input and send button
         let input = row::with_capacity(2)
             .spacing(space_xxs)
@@ -313,11 +339,23 @@ impl cosmic::Application for AppModel {
                     .padding(space_m)
                     .width(Length::Fill),
             )
-            .push(
-                button::custom("Send")
-                    .class(theme::Button::Text)
-                    .on_press(Message::SendMessage),
-            );
+            .push(send_button);
+
+        // Input row with text input and send button
+        // let input = row::with_capacity(2)
+        //     .spacing(space_xxs)
+        //     .push(
+        //         text_input::text_input("Type a message...", &self.input_value)
+        //             .on_input(Message::InputChanged)
+        //             .on_submit(Message::SendMessage)
+        //             .padding(space_m)
+        //             .width(Length::Fill),
+        //     )
+        //     .push(
+        //         button::custom("Send")
+        //             .class(theme::Button::Text)
+        //             .on_press(Message::SendMessage),
+        //     );
 
         // Main layout
         let content = column::with_capacity(2)
