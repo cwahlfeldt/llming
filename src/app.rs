@@ -1,33 +1,20 @@
 // SPDX-License-Identifier: MPL-2.0
 
 use crate::config::Config;
-use conduit::{ClaudeModel, Conduit, ConduitError, StreamEvent};
+use conduit::{Conduit, StreamEvent};
 use cosmic::app::{Core, Task};
 use cosmic::cosmic_theme;
-use cosmic::iced::advanced::subscription::Recipe;
-use cosmic::iced::futures::channel::mpsc;
 use cosmic::iced::Color;
 use cosmic::iced::{Length, Subscription};
-use cosmic::iced_futures::futures::stream::Stream;
-use cosmic::iced_futures::subscription::Event as IcedEvent;
 use cosmic::theme;
 use cosmic::theme::Theme;
 use cosmic::widget::container::Style;
 use cosmic::widget::{button, column, container, row, text, text_input};
 use cosmic::{Apply, Element};
-use futures_util::StreamExt;
-use std::hash::{Hash, Hasher};
-use std::pin::Pin;
 use std::sync::Arc;
 
-pub struct AppModel {
-    core: Core,
-    config: Config,
-    messages: Vec<ChatMessage>,
-    input_value: String,
-    conduit: Option<Arc<Conduit>>,
-    stream_state: StreamState,
-}
+mod stream_subscription;
+use stream_subscription::StreamSubscription;
 
 #[derive(Debug, Clone)]
 struct ChatMessage {
@@ -52,6 +39,15 @@ pub enum StreamState {
     Idle,
     Streaming,
     Error(String),
+}
+
+pub struct AppModel {
+    core: Core,
+    config: Config,
+    messages: Vec<ChatMessage>,
+    input_value: String,
+    conduit: Option<Arc<Conduit>>,
+    stream_state: StreamState,
 }
 
 impl cosmic::Application for AppModel {
@@ -90,82 +86,24 @@ impl cosmic::Application for AppModel {
         match &self.stream_state {
             StreamState::Streaming => {
                 if let Some(conduit) = &self.conduit {
-                    let prompt = self.input_value.trim().to_string();
+                    // Use the last user message as the prompt
+                    let prompt = self.messages
+                        .iter()
+                        .rev()
+                        .find(|msg| msg.is_user)
+                        .map(|msg| msg.content.clone())
+                        .unwrap_or_default();
+
                     if prompt.is_empty() {
                         return Subscription::none();
                     }
 
-                    eprintln!("Starting subscription with prompt: '{}'", prompt);
+                    let subscription = StreamSubscription {
+                        conduit: Arc::clone(conduit),
+                        prompt,
+                    };
 
-                    struct StreamSubscription {
-                        conduit: Arc<Conduit>,
-                        prompt: String,
-                    }
-
-                    impl Recipe for StreamSubscription {
-                        type Output = Message;
-
-                        fn hash(
-                            &self,
-                            state: &mut cosmic::iced::advanced::graphics::futures::subscription::Hasher,
-                        ) {
-                            self.prompt.hash(state);
-                        }
-
-                        fn stream(
-                            self: Box<Self>,
-                            _input: Pin<Box<dyn Stream<Item = IcedEvent> + Send>>,
-                        ) -> Pin<Box<dyn Stream<Item = Message> + Send>> {
-                            Box::pin(async_stream::stream! {
-                                yield Message::StreamStarted;
-
-                                eprintln!("Debug - Sending prompt: '{}'", self.prompt);
-                                eprintln!("App - Creating stream request for prompt: {}", self.prompt);
-                                match self.conduit.stream_message(&self.prompt, ClaudeModel::Claude35Sonnet, 1024).await {
-                                    Ok(stream) => {
-                                        eprintln!("App - Stream created successfully");
-                                        let mut pinned = Box::pin(stream);
-                                        
-                                        yield Message::StreamStarted;
-                                        
-                                        while let Some(event) = pinned.next().await {
-                                            eprintln!("App - Got stream event");
-                                            match event {
-                                                Ok(StreamEvent::ContentBlockDelta(content)) => {
-                                                    eprintln!("App - Content: {}", content.delta.text);
-                                                    yield Message::StreamUpdate(content.delta.text);
-                                                }
-                                                Ok(StreamEvent::MessageStop) => {
-                                                    eprintln!("App - Stream complete");
-                                                    yield Message::StreamCompleted;
-                                                    break;
-                                                }
-                                                Err(e) => {
-                                                    eprintln!("App - Stream error: {}", e);
-                                                    yield Message::StreamError(e.to_string());
-                                                    break;
-                                                }
-                                                _ => {
-                                                    eprintln!("App - Other event type");
-                                                }
-                                            }
-                                        }
-                                        eprintln!("App - Stream ended");
-                                    }
-                                    Err(e) => {
-                                        yield Message::StreamError(e.to_string());
-                                    }
-                                }
-                            })
-                        }
-                    }
-
-                    cosmic::iced::advanced::graphics::futures::subscription::from_recipe(
-                        StreamSubscription {
-                            conduit: Arc::clone(conduit),
-                            prompt,
-                        },
-                    )
+                    cosmic::iced::advanced::graphics::futures::subscription::from_recipe(subscription)
                 } else {
                     Subscription::none()
                 }
@@ -183,7 +121,7 @@ impl cosmic::Application for AppModel {
                 let prompt = self.input_value.trim();
                 if prompt.is_empty() {
                     self.stream_state = StreamState::Error("Cannot send empty message".to_string());
-                } else {
+                } else if self.conduit.is_some() {
                     // Add user message
                     self.messages.push(ChatMessage {
                         content: self.input_value.clone(),
@@ -198,26 +136,28 @@ impl cosmic::Application for AppModel {
                         is_streaming: true,
                     });
 
-                    // Set streaming state first, input will be cleared after subscription starts
+                    // Set streaming state and clear input immediately
                     self.stream_state = StreamState::Streaming;
+                    self.input_value.clear();
+                } else {
+                    self.stream_state = StreamState::Error("API connection not available".to_string());
                 }
             }
             Message::StreamStarted => {
-                eprintln!("Debug - Stream started message received");
                 if let Some(last) = self.messages.last_mut() {
                     if !last.is_user {
                         last.is_streaming = true;
+                        last.content.clear(); // Ensure we start with empty content
                     }
                 }
-                // Clear input after stream has started
-                self.input_value.clear();
             }
             Message::StreamUpdate(content) => {
-                eprintln!("Debug - Stream update received: {}", content);
-                // Append new content to the last message
                 if let Some(last) = self.messages.last_mut() {
-                    if !last.is_user {
+                    if !last.is_user && last.is_streaming {
                         last.content.push_str(&content);
+                        // Force a redraw by cloning the message
+                        let updated_message = last.clone();
+                        *last = updated_message;
                     }
                 }
             }

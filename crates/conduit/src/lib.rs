@@ -1,5 +1,5 @@
 // Re-export types from mesh that we use publicly
-use futures_util::StreamExt;
+use futures_util::{Stream, StreamExt};
 pub use mesh::anthropic::{
     client::Client,
     completion::{
@@ -10,8 +10,8 @@ pub use mesh::anthropic::{
     error::AnthropicError,
     models::claude::ClaudeModel,
 };
-use std::error::Error;
-use std::fmt;
+use std::{error::Error, pin::Pin, task::Poll};
+use std::{fmt, task::Context};
 
 #[derive(Debug)]
 pub enum ConduitError {
@@ -106,66 +106,60 @@ impl Conduit {
         model: ClaudeModel,
         max_tokens: u32,
     ) -> Result<impl StreamExt<Item = Result<StreamEvent, AnthropicError>>, ConduitError> {
-        unsafe {
-            // Create message structure
-            let content = Content {
-                content_type: ContentType::Text,
-                text: prompt.into(),
-            };
+        let content = Content {
+            content_type: ContentType::Text,
+            text: prompt.into(),
+        };
 
-            let message = Message {
-                role: Role::User,
-                content: vec![content],
-            };
+        let message = Message {
+            role: Role::User,
+            content: vec![content],
+        };
 
-            // Create request structure
-            let mut request = MessageRequest::default();
-            request.model = model;
-            request.max_tokens = max_tokens;
-            request.stream = true;
-            request.messages = vec![message];
+        let mut request = MessageRequest::default();
+        request.model = model;
+        request.max_tokens = max_tokens;
+        request.stream = true;
+        request.messages = vec![message];
 
-            eprintln!("Conduit - Sending stream request with prompt: {:?}", request);
+        eprintln!("Conduit - Sending stream request");
+        let raw_stream = self.client.stream_message(request).await?;
+        eprintln!("Conduit - Got raw stream from API");
 
-            // Send the streaming request
-            eprintln!("Conduit - About to send request to API");
-            let raw_stream = self.client.stream_message(request).await?;
-            eprintln!("Conduit - Got raw stream from API");
+        // Debug wrapper for the raw stream
+        struct DebugStream<S> {
+            inner: S,
+        }
 
-            // Convert the raw stream into a mapped stream with explicit event handling
-            use futures_util::{Stream, StreamExt, TryStreamExt};
-            use std::pin::Pin;
-            use std::task::{Context, Poll};
+        impl<S: Stream<Item = Result<StreamEvent, AnthropicError>> + Unpin> Stream for DebugStream<S> {
+            type Item = Result<StreamEvent, AnthropicError>;
 
-            struct TrackedStream<S> {
-                inner: S,
-            }
-
-            impl<S: Stream + Unpin> Stream for TrackedStream<S> {
-                type Item = S::Item;
-
-                fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-                    eprintln!("Conduit - Polling stream");
-                    match self.inner.poll_next_unpin(cx) {
-                        Poll::Ready(Some(item)) => {
-                            eprintln!("Conduit - Got stream item");
-                            Poll::Ready(Some(item))
+            fn poll_next(
+                mut self: Pin<&mut Self>,
+                cx: &mut std::task::Context<'_>,
+            ) -> std::task::Poll<Option<Self::Item>> {
+                match self.inner.poll_next_unpin(cx) {
+                    std::task::Poll::Ready(Some(result)) => {
+                        match &result {
+                            Ok(event) => {
+                                eprintln!(
+                                    "DEBUG - Raw event type: {:?}",
+                                    std::mem::discriminant(event)
+                                );
+                                eprintln!("DEBUG - Full event: {:#?}", event);
+                            }
+                            Err(e) => {
+                                eprintln!("DEBUG - Error: {:#?}", e);
+                            }
                         }
-                        Poll::Ready(None) => {
-                            eprintln!("Conduit - Stream ended");
-                            Poll::Ready(None)
-                        }
-                        Poll::Pending => {
-                            eprintln!("Conduit - Stream pending");
-                            Poll::Pending
-                        }
+                        std::task::Poll::Ready(Some(result))
                     }
+                    other => other,
                 }
             }
-
-            let tracked = TrackedStream { inner: raw_stream };
-            Ok(Box::pin(tracked))
         }
+
+        Ok(DebugStream { inner: raw_stream })
     }
 }
 
