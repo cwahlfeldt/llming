@@ -85,12 +85,19 @@ impl cosmic::Application for AppModel {
 
         (app, Task::none())
     }
-
     fn subscription(&self) -> Subscription<Message> {
         match &self.stream_state {
             StreamState::Streaming => {
                 if let Some(conduit) = &self.conduit {
-                    let prompt = self.input_value.trim().to_string();
+                    // Use the last user message as the prompt
+                    let prompt = self
+                        .messages
+                        .iter()
+                        .rev()
+                        .find(|msg| msg.is_user)
+                        .map(|msg| msg.content.clone())
+                        .unwrap_or_default();
+
                     if prompt.is_empty() {
                         return Subscription::none();
                     }
@@ -125,9 +132,9 @@ impl cosmic::Application for AppModel {
                                     Ok(stream) => {
                                         eprintln!("App - Stream created successfully");
                                         let mut pinned = Box::pin(stream);
-                                        
+
                                         yield Message::StreamStarted;
-                                        
+
                                         while let Some(event) = pinned.next().await {
                                             eprintln!("App - Got stream event");
                                             match event {
@@ -183,7 +190,7 @@ impl cosmic::Application for AppModel {
                 let prompt = self.input_value.trim();
                 if prompt.is_empty() {
                     self.stream_state = StreamState::Error("Cannot send empty message".to_string());
-                } else {
+                } else if self.conduit.is_some() {
                     // Add user message
                     self.messages.push(ChatMessage {
                         content: self.input_value.clone(),
@@ -198,26 +205,32 @@ impl cosmic::Application for AppModel {
                         is_streaming: true,
                     });
 
-                    // Set streaming state first, input will be cleared after subscription starts
+                    // Set streaming state and clear input immediately
                     self.stream_state = StreamState::Streaming;
+                    self.input_value.clear();
+                } else {
+                    self.stream_state =
+                        StreamState::Error("API connection not available".to_string());
                 }
             }
+
             Message::StreamStarted => {
                 eprintln!("Debug - Stream started message received");
                 if let Some(last) = self.messages.last_mut() {
                     if !last.is_user {
                         last.is_streaming = true;
+                        last.content.clear(); // Ensure we start with empty content
                     }
                 }
-                // Clear input after stream has started
-                self.input_value.clear();
             }
             Message::StreamUpdate(content) => {
                 eprintln!("Debug - Stream update received: {}", content);
-                // Append new content to the last message
                 if let Some(last) = self.messages.last_mut() {
-                    if !last.is_user {
+                    if !last.is_user && last.is_streaming {
                         last.content.push_str(&content);
+                        // Force a redraw by cloning the message
+                        let updated_message = last.clone();
+                        *last = updated_message;
                     }
                 }
             }
